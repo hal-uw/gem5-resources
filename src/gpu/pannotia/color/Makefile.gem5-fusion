@@ -3,7 +3,7 @@ HIPCC = $(HIP_PATH)/bin/hipcc
 
 # these are needed for m5ops
 # Assumes gem5 and gem5-resources share a common parent directory.
-GEM5_ROOT ?= ../../../../../gem5
+GEM5_ROOT ?= /nobackup2/mohan34/GAPStuff/gap-gem5
 CFLAGS += -I$(GEM5_ROOT)/include -I/../graph_parser
 LDFLAGS += -L$(GEM5_ROOT)/util/m5/build/x86/out -lm5
 

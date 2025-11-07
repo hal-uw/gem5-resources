@@ -450,6 +450,18 @@ int main(int argc, char **argv)
     // Main computation loop
 //    double timer3 = gettime();
 
+ #ifndef GEM5_FUSION
+        // HIP Device Timers don't really work in gem5, so only use them when running on real GPU
+	printf("Starting timers\n");
+        hipEvent_t start, end;
+	float currKernelElapsedTime = 0.0f, totalElapsedTime = 0.0f;
+        hipError_t hipErr;
+        hipErr = hipEventCreate(&start);
+        hipErr = hipEventCreate(&end);
+
+        hipEventRecord(start, 0);
+#endif
+
     while (stop) {
         stop = 0;
 
@@ -489,6 +501,15 @@ int main(int argc, char **argv)
         return -1;
     }
 
+#ifndef GEM5_FUSION
+	printf("Stopping Timers\n");
+        // HIP Device Timers don't really work in gem5, so only use them when running on real GPU
+        hipEventRecord(end, 0);
+        hipEventSynchronize(end);
+        hipEventElapsedTime(&currKernelElapsedTime, start, end);
+        totalElapsedTime += currKernelElapsedTime;
+#endif
+
 #ifdef GEM5_FUSION
     m5_work_end(0, 0);
 #endif
@@ -504,7 +525,9 @@ int main(int argc, char **argv)
     printf("total number of colors used: %d\n", graph_color);
 //    printf("kernel time = %lf ms\n", (timer4 - timer3) * 1000);
 //    printf("kernel + memcpy time = %lf ms\n", (timer2 - timer1) * 1000);
-
+#ifndef GEM5_FUSION
+    printf("total amount of elapsed time: %f", totalElapsedTime);
+#endif
 #if 1
     // Dump the color array into an output file
     print_vector(color, num_nodes);
