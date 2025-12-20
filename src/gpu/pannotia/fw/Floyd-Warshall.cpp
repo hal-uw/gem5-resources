@@ -93,6 +93,15 @@
 #define TRUE 1
 #define FALSE 0
 
+// GPU error check
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(hipError_t code, const char *file, int line, bool abort=true){
+    if (code != hipSuccess) {
+        fprintf(stderr,"GPUassert: %s %s %d\n", hipGetErrorString(code), file, line);
+        if (abort) exit(code);
+    }
+}
+
 int main(int argc, char **argv)
 {
     char *tmpchar = NULL;
@@ -270,10 +279,15 @@ int main(int argc, char **argv)
     dim3 threads(16, 16, 1);
     dim3 grid(dim / 16, dim / 16, 1);
 
+    uint64_t *startClk_g;
+    uint64_t *stopClk_g;
+    gpuErrchk( hipMalloc(&startClk_g, (dim*dim)*sizeof(uint64_t)) );
+    gpuErrchk( hipMalloc(&stopClk_g, (dim*dim)*sizeof(uint64_t)) );
+
     //double timer3 = gettime();
     // Main computation loop
     for (int k = 1; k < dim && k < MAX_ITERS; k++) {
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, dist_d, next_d, dim, k);
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, dist_d, next_d, dim, k, startClk_g, stopClk_g);
         hipDeviceSynchronize();
     }
 
@@ -283,6 +297,17 @@ int main(int argc, char **argv)
         fprintf(stderr, "ERROR:  read back dist_d %d failed\n", err);
         return -1;
     }
+
+    uint64_t *startClk = (uint64_t*) malloc(dim*dim*sizeof(uint64_t));
+    uint64_t *stopClk = (uint64_t*) malloc(dim*dim*sizeof(uint64_t));
+    gpuErrchk( hipMemcpy(startClk, startClk_g, dim*dim*sizeof(uint64_t), hipMemcpyDeviceToHost) );
+    gpuErrchk( hipMemcpy(stopClk, stopClk_g, dim*dim*sizeof(uint64_t), hipMemcpyDeviceToHost) );
+
+    uint64_t cumulative_time = 0;
+    for(int idx = 0; idx < dim*dim; idx++) {
+        cumulative_time += (stopClk[idx] - startClk[idx]);
+    }
+    printf("Average Runtime  = %12.4f cycles\n", (float)(cumulative_time)/(dim*dim));
 
 #ifdef GEM5_FUSION
     m5_work_end(0, 0);

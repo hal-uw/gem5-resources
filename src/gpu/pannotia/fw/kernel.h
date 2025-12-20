@@ -69,8 +69,12 @@
  * @param   k     Current iteration number
  */
 __global__ void
-floydwarshall(int *dist, int *next, int dim, int k)
+floydwarshall(int *dist, int *next, int dim, int k, uint64_t *startClk, uint64_t *stopClk)
 {
+    // start timing
+    uint64_t start = 0;
+    start = __builtin_readcyclecounter();
+    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // Get my workitem id x_dim
     int i = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
     // Get my workitem id y_dim
@@ -83,6 +87,15 @@ floydwarshall(int *dist, int *next, int dim, int k)
             next[i * dim + j] = k;
         }
     }
+
+    // stop timing
+    uint64_t stop = 0;
+    stop = __builtin_readcyclecounter();
+    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
+    // write time and data back to memory
+    uint32_t tid = (j*hipBlockDim_x * hipGridDim_x) + i;
+    startClk[tid] = start;
+    stopClk[tid] = stop;
 }
 
 #endif // KERNEL_H

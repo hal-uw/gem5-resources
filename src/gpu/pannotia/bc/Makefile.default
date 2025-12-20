@@ -5,13 +5,14 @@ EXECUTABLE = bc_hip.default
 CPPSRC = BC.cpp 
 
 # BC has a runtime error in fgets with -O2 and -O3
-OPTS = -O1 -Wno-unused-result
+OPTS = -O1 -Wno-unused-result --gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13 -g
+
 BIN_DIR ?= ./bin.default
 
 all: $(BIN_DIR)/$(EXECUTABLE)
 
 $(BIN_DIR)/$(EXECUTABLE): $(CPPSRC) ../graph_parser/parse.cpp ../graph_parser/util.cpp $(BIN_DIR)
-	$(HIPCC) $(OPTS) --offload-arch=gfx900,gfx90a,gfx942 $(CXXFLAGS) $(CPPSRC) -o $(BIN_DIR)/$(EXECUTABLE)
+	$(HIPCC) $(OPTS) --offload-arch=gfx900,gfx906,gfx90a,gfx942 $(CXXFLAGS) $(CPPSRC) -o $(BIN_DIR)/$(EXECUTABLE)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

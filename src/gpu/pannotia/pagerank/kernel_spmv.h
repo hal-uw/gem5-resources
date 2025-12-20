@@ -125,8 +125,13 @@ inicsr(int *row, int *col, float *data, int *col_cnt, int num_nodes,
  */
 __global__ void
 spmv_csr_scalar_kernel(const int num_nodes, int *row, int *col, float *data,
-                       float *x, float *y)
+                       float *x, float *y, uint64_t *startClk, uint64_t *stopClk)
 {
+    // start timing
+    uint64_t start = 0;
+    start = __builtin_readcyclecounter();
+    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
+
     // Get my workitem id
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
     if (tid < num_nodes) {
@@ -140,6 +145,14 @@ spmv_csr_scalar_kernel(const int num_nodes, int *row, int *col, float *data,
         }
         y[tid] += sum;
     }
+
+    // stop timing
+    uint64_t stop = 0;
+    stop = __builtin_readcyclecounter();
+    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
+    // write time back to memory
+    startClk[tid] = start;
+    stopClk[tid] = stop;
 }
 
 /**
@@ -149,8 +162,12 @@ spmv_csr_scalar_kernel(const int num_nodes, int *row, int *col, float *data,
  * @param   num_nodes    number of vertices
  */
 __global__ void
-pagerank2(float *page_rank1, float *page_rank2, const int num_nodes)
+pagerank2(float *page_rank1, float *page_rank2, const int num_nodes, uint64_t *startClk, uint64_t *stopClk)
 {
+    // start timing
+    uint64_t start = 0;
+    start = __builtin_readcyclecounter();
+    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // Get my workitem id
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
     // Update pagerank value with damping factor
@@ -158,6 +175,14 @@ pagerank2(float *page_rank1, float *page_rank2, const int num_nodes)
         page_rank1[tid]	= 0.15f / (float)num_nodes + 0.85f * page_rank2[tid];
         page_rank2[tid] = 0.0f;
     }
+
+    // stop timing
+    uint64_t stop = 0;
+    stop = __builtin_readcyclecounter();
+    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
+    // write time back to memory
+    startClk[tid] = start;
+    stopClk[tid] = stop;
 }
 
 #endif // KERNEL_SPMV_H
