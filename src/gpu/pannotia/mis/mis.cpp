@@ -81,15 +81,6 @@ void dump2file(int *adjmatrix, int num_nodes);
 void print_vector(int *vector, int num);
 void print_vectorf(float *vector, int num);
 
-// GPU error check
-#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-inline void gpuAssert(hipError_t code, const char *file, int line, bool abort=true){
-    if (code != hipSuccess) {
-        fprintf(stderr,"GPUassert: %s %s %d\n", hipGetErrorString(code), file, line);
-        if (abort) exit(code);
-    }
-}
-
 int main(int argc, char **argv)
 {
     char *tmpchar;
@@ -195,7 +186,7 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    double time1 = gettime();
+//    double time1 = gettime();
 
 #ifdef GEM5_FUSION
     m5_work_begin(0, 0);
@@ -243,11 +234,6 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    uint64_t *startClk_g;
-    uint64_t *stopClk_g;
-    gpuErrchk( hipMalloc(&startClk_g, (3*block_size*num_blocks)*sizeof(uint64_t)) );
-    gpuErrchk( hipMalloc(&stopClk_g, (3*block_size*num_blocks)*sizeof(uint64_t)) );
-
     // Termination variable
     int stop = 1;
     int iterations = 0;
@@ -264,16 +250,15 @@ int main(int argc, char **argv)
         // Launch mis1
         hipLaunchKernelGGL(HIP_KERNEL_NAME(mis1), dim3(grid), dim3(threads), 0, 0, row_d, col_d, node_value_d, s_array_d,
                                  c_array_d, min_array_d, stop_d, num_nodes,
-                                 num_edges, startClk_g, stopClk_g);
+                                 num_edges);
 
         // Launch mis2
         hipLaunchKernelGGL(HIP_KERNEL_NAME(mis2), dim3(grid), dim3(threads), 0, 0, row_d, col_d, node_value_d, s_array_d,
                                  c_array_d, c_array_u_d, min_array_d, num_nodes,
-                                 num_edges, startClk_g + (num_blocks*block_size), stopClk_g + (num_blocks*block_size));
+                                 num_edges);
 
         // Launch mis3
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(mis3), dim3(grid), dim3(threads), 0, 0, c_array_u_d, c_array_d, num_nodes,
-                                startClk_g + (2*num_blocks*block_size), stopClk_g + (2*num_blocks*block_size));
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(mis3), dim3(grid), dim3(threads), 0, 0, c_array_u_d, c_array_d, num_nodes);
 
         // Copy the termination variable back
         err = hipMemcpy(&stop, stop_d, sizeof(int), hipMemcpyDeviceToHost);
@@ -293,11 +278,6 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    uint64_t *startClk = (uint64_t*) malloc(3*block_size*num_blocks*sizeof(uint64_t));
-    uint64_t *stopClk = (uint64_t*) malloc(3*block_size*num_blocks*sizeof(uint64_t));
-    gpuErrchk( hipMemcpy(startClk, startClk_g, 3*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
-    gpuErrchk( hipMemcpy(stopClk, stopClk_g, 3*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
-
 #ifdef GEM5_FUSION
     m5_work_end(0, 0);
 #endif
@@ -307,23 +287,11 @@ int main(int argc, char **argv)
     unmap_m5_mem();
 #endif
 
-    double time2 = gettime();
-
-    uint64_t cumulative_time_1 = 0;
-    uint64_t cumulative_time_2 = 0;
-    uint64_t cumulative_time_3 = 0;
-    for(int idx = 0; idx < (num_blocks*block_size); idx++) {
-        cumulative_time_1 += (stopClk[idx] - startClk[idx]);
-        cumulative_time_2 += (stopClk[idx+(num_blocks*block_size)] - startClk[idx+(num_blocks*block_size)]);
-        cumulative_time_3 += (stopClk[idx+(2*num_blocks*block_size)] - startClk[idx+(2*num_blocks*block_size)]);
-    }
-    printf("Average Runtime of 1st Kernel = %12.4f cycles\n", (float)(cumulative_time_1)/(block_size*num_blocks));
-    printf("Average Runtime of 2nd Kernel = %12.4f cycles\n", (float)(cumulative_time_2)/(block_size*num_blocks));
-    printf("Average Runtime of 3rd Kernel = %12.4f cycles\n", (float)(cumulative_time_3)/(block_size*num_blocks));
+//    double time2 = gettime();
 
     // Print out the timing characterisitics
     printf("number of iterations: %d\n", iterations);
-    printf("kernel + memcpy time %f ms\n", (time2 - time1) * 1000);
+//    printf("kernel + memcpy time %f ms\n", (time2 - time1) * 1000);
 
 #if 1
     // Print the set array

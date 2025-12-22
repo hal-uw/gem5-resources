@@ -73,13 +73,8 @@
  */
 __global__ void
 spmv_min_dot_plus_kernel(const int num_rows, int *row, int *col, int *data,
-                         int *x, int *y, uint64_t *startClk, uint64_t *stopClk)
+                         int *x, int *y)
 {
-    // start timing
-    uint64_t start = 0;
-    start = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-
     // Get my workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
@@ -97,13 +92,6 @@ spmv_min_dot_plus_kernel(const int num_rows, int *row, int *col, int *data,
         }
         y[tid] = min;
     }
-    // stop timing
-    uint64_t stopCycle = 0;
-    stopCycle = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
 }
 
 /**
@@ -117,13 +105,8 @@ spmv_min_dot_plus_kernel(const int num_rows, int *row, int *col, int *data,
  */
 __global__ void
 ell_min_dot_plus_kernel(const int num_nodes, const int height, int *col,
-                        int *data, int *x, int *y, uint64_t *startClk, uint64_t *stopClk)
+                        int *data, int *x, int *y)
 {
-    // start timing
-    uint64_t start = 0;
-    start = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-
     // Get workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
@@ -142,14 +125,6 @@ ell_min_dot_plus_kernel(const int num_nodes, const int height, int *col,
         }
         y[tid] = min;
     }
-
-    // stop timing
-    uint64_t stopCycle = 0;
-    stopCycle = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
 }
 
 /**
@@ -184,25 +159,13 @@ vector_init(int *vector1, int *vector2, const int i, const int num_nodes)
  * @param   num_nodes    number of vertices
  */
 __global__ void
-vector_assign(int *vector1, int *vector2, const int num_nodes, uint64_t *startClk, uint64_t *stopClk)
+vector_assign(int *vector1, int *vector2, const int num_nodes)
 {
-    // start timing
-    uint64_t start = 0;
-    start = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
     if (tid < num_nodes) {
         vector1[tid] = vector2[tid];
     }
-    // stop timing
-    uint64_t stopCycle = 0;
-    stopCycle = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
 }
 
 /**
@@ -213,13 +176,8 @@ vector_assign(int *vector1, int *vector2, const int num_nodes, uint64_t *startCl
  * @param   num_nodes    number of vertices
  */
 __global__ void
-vector_diff(int *vector1, int *vector2, int *stop, const int num_nodes, uint64_t *startClk, uint64_t *stopClk)
+vector_diff(int *vector1, int *vector2, int *stop, const int num_nodes)
 {
-    // start timing
-    uint64_t start = 0;
-    start = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
     if (tid < num_nodes) {
@@ -227,14 +185,6 @@ vector_diff(int *vector1, int *vector2, int *stop, const int num_nodes, uint64_t
             *stop = 1;
         }
     }
-
-    // stop timing
-    uint64_t stopCycle = 0;
-    stopCycle = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
 }
 
 #endif // KERNEL_H

@@ -76,14 +76,8 @@
 
 __global__ void
 bfs_kernel(int *row, int *col, int *d, float *rho, int *cont,
-           const int num_nodes, const int num_edges, const int dist,
-           uint64_t *startClk, uint64_t *stopClk)
+           const int num_nodes, const int num_edges, const int dist)
 {
-    // start timing
-    uint64_t start = 0;
-    start = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
     //navigate the current layer
@@ -113,14 +107,6 @@ bfs_kernel(int *row, int *col, int *d, float *rho, int *cont,
             }
         }
     }
-
-    // stop timing
-    uint64_t stopCycle = 0;
-    stopCycle = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
 }
 
 /**
@@ -142,13 +128,8 @@ bfs_kernel(int *row, int *col, int *d, float *rho, int *cont,
 __global__ void
 backtrack_kernel(int *row, int *col, int *d, float *rho, float *sigma,
                  const int num_nodes, const int num_edges, const int dist,
-                 const int s, float* bc, uint64_t *startClk, uint64_t *stopClk)
+                 const int s, float* bc)
 {
-    // start timing
-    uint64_t start = 0;
-    start = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
     // Navigate the current layer
@@ -174,14 +155,6 @@ backtrack_kernel(int *row, int *col, int *d, float *rho, float *sigma,
         if (tid != s)
             bc[tid] = bc[tid] + sigma[tid];
     }
-
-    // stop timing
-    uint64_t stopCycle = 0;
-    stopCycle = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
 
 }
 

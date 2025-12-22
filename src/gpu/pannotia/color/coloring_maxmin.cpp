@@ -78,15 +78,6 @@
 
 void print_vector(int *vector, int num);
 
-// GPU error check
-#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-inline void gpuAssert(hipError_t code, const char *file, int line, bool abort=true){
-    if (code != hipSuccess) {
-        fprintf(stderr,"GPUassert: %s %s %d\n", hipGetErrorString(code), file, line);
-        if (abort) exit(code);
-    }
-}
-
 int main(int argc, char **argv)
 {
     char *tmpchar;
@@ -238,10 +229,6 @@ int main(int argc, char **argv)
     // Main computation loop
     double timer3 = gettime();
 
-    uint64_t *startClk_g;
-    uint64_t *stopClk_g;
-    gpuErrchk( hipMalloc(&startClk_g, (2*block_size*num_blocks)*sizeof(uint64_t)) );
-    gpuErrchk( hipMalloc(&stopClk_g, (2*block_size*num_blocks)*sizeof(uint64_t)) );
     while (stop) {
 
         stop = 0;
@@ -255,13 +242,11 @@ int main(int argc, char **argv)
         // Launch the color kernel 1
         hipLaunchKernelGGL(color1, dim3(grid), dim3(threads ), 0, 0, row_d, col_d, node_value_d, color_d,
                                      stop_d, max_d, min_d, graph_color,
-                                     num_nodes, num_edges,
-                                     startClk_g, stopClk_g);
+                                     num_nodes, num_edges);
 
         // Launch the color kernel 2
         hipLaunchKernelGGL(color2, dim3(grid), dim3(threads ), 0, 0, node_value_d, color_d, max_d, min_d,
-                                     graph_color, num_nodes, num_edges,
-                                     startClk_g+(block_size*num_blocks), stopClk_g+(block_size*num_blocks));
+                                     graph_color, num_nodes, num_edges);
 
         err = hipMemcpy(&stop, stop_d, sizeof(int), hipMemcpyDeviceToHost);
         if (err != hipSuccess) {
@@ -283,11 +268,6 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    uint64_t *startClk = (uint64_t*) malloc(2*block_size*num_blocks*sizeof(uint64_t));
-    uint64_t *stopClk = (uint64_t*) malloc(2*block_size*num_blocks*sizeof(uint64_t));
-    gpuErrchk( hipMemcpy(startClk, startClk_g, 2*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
-    gpuErrchk( hipMemcpy(stopClk, stopClk_g, 2*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
-
 #ifdef GEM5_FUSION
     m5_work_end(0, 0);
 #endif
@@ -298,15 +278,6 @@ int main(int argc, char **argv)
 #endif
 
     double timer2 = gettime();
-
-    uint64_t cumulative_time_1 = 0;
-    uint64_t cumulative_time_2 = 0;
-    for(int idx = 0; idx < (num_blocks*block_size); idx++) {
-        cumulative_time_1 += (stopClk[idx] - startClk[idx]);
-        cumulative_time_2 += (stopClk[idx+(num_blocks*block_size)] - startClk[idx+(num_blocks*block_size)]);
-    }
-    printf("Average Runtime of 1st Kernel = %12.4f cycles\n", (float)(cumulative_time_1)/(block_size*num_blocks));
-    printf("Average Runtime of 2nd Kernel = %12.4f cycles\n", (float)(cumulative_time_2)/(block_size*num_blocks));
 
     // Print out color and timing statistics
     printf("total number of colors used: %d\n", graph_color);

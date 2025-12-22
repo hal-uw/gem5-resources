@@ -73,13 +73,8 @@
  */
 __global__ void
 pagerank1(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
-          const int num_nodes, const int num_edges, uint64_t *startClk, uint64_t *stopClk)
+          const int num_nodes, const int num_edges)
 {
-    // start timing
-    uint64_t start = 0;
-    start = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-
     // Get my workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
@@ -101,14 +96,6 @@ pagerank1(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
             atomicAdd(&page_rank2[nid], page_rank1[tid] / (float)(end - start));
         }
     }
-
-    // stop timing
-    uint64_t stop = 0;
-    stop = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stop;
 }
 
 /**
@@ -123,13 +110,8 @@ pagerank1(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
  */
 __global__ void
 pagerank2(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
-          const int num_nodes, const int num_edges, uint64_t *startClk, uint64_t *stopClk)
+          const int num_nodes, const int num_edges)
 {
-    // start timing
-    uint64_t start = 0;
-    start = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    
     // Get my workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
@@ -138,14 +120,6 @@ pagerank2(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
         page_rank1[tid]	= 0.15 / (float)num_nodes + 0.85 * page_rank2[tid];
         page_rank2[tid] = 0.0f;
     }
-
-    // stop timing
-    uint64_t stop = 0;
-    stop = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stop;
 }
 
 /**

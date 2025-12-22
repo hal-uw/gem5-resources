@@ -85,15 +85,6 @@
 void print_vector(int *vector, int num);
 void print_vectorf(float *vector, int num);
 
-// GPU error check
-#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-inline void gpuAssert(hipError_t code, const char *file, int line, bool abort=true){
-    if (code != hipSuccess) {
-        fprintf(stderr,"GPUassert: %s %s %d\n", hipGetErrorString(code), file, line);
-        if (abort) exit(code);
-    }
-}
-
 int main(int argc, char **argv)
 {
     char *tmpchar;
@@ -226,11 +217,6 @@ int main(int argc, char **argv)
     // Initialization
     hipLaunchKernelGGL(HIP_KERNEL_NAME(clean_bc), dim3(grid), dim3(threads ), 0, 0, bc_d, num_nodes);
 
-    uint64_t *startClk_g;
-    uint64_t *stopClk_g;
-    gpuErrchk( hipMalloc(&startClk_g, (2*local_worksize*num_blocks)*sizeof(uint64_t)) );
-    gpuErrchk( hipMalloc(&stopClk_g, (2*local_worksize*num_blocks)*sizeof(uint64_t)) );
-
     // Main computation loop
     for (int i = 0; i < num_nodes && i < MAX_ITERS; i++) {
         hipLaunchKernelGGL(HIP_KERNEL_NAME(clean_1d_array), dim3(grid), dim3(threads ), 0, 0, i, dist_d, sigma_d, rho_d,
@@ -249,7 +235,7 @@ int main(int argc, char **argv)
             hipMemcpy(stop_d, &stop, sizeof(int), hipMemcpyHostToDevice);
 
             hipLaunchKernelGGL(HIP_KERNEL_NAME(bfs_kernel), dim3(grid), dim3(threads ), 0, 0, row_d, col_d, dist_d, rho_d, stop_d,
-                                            num_nodes, num_edges, dist, startClk_g, stopClk_g);
+                                            num_nodes, num_edges, dist);
 
             // Copy back the termination variable from the device
             hipMemcpy(&stop, stop_d, sizeof(int), hipMemcpyDeviceToHost);
@@ -266,7 +252,7 @@ int main(int argc, char **argv)
             hipLaunchKernelGGL(HIP_KERNEL_NAME(backtrack_kernel), dim3(grid), dim3(threads ), 0, 0, row_trans_d, col_trans_d,
                                                 dist_d, rho_d, sigma_d,
                                                 num_nodes, num_edges, dist, i,
-                                                bc_d, startClk_g+(local_worksize*num_blocks), stopClk_g+(local_worksize*num_blocks));
+                                                bc_d);
 
             // Back one level
             dist--;
@@ -284,11 +270,6 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    uint64_t *startClk = (uint64_t*) malloc(2*local_worksize*num_blocks*sizeof(uint64_t));
-    uint64_t *stopClk = (uint64_t*) malloc(2*local_worksize*num_blocks*sizeof(uint64_t));
-    gpuErrchk( hipMemcpy(startClk, startClk_g, 2*local_worksize*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
-    gpuErrchk( hipMemcpy(stopClk, stopClk_g, 2*local_worksize*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
-
 #ifdef GEM5_FUSION
     m5_work_end(0, 0);
 #endif
@@ -299,15 +280,6 @@ int main(int argc, char **argv)
 #endif
 
     //timer2 = gettime();
-
-    uint64_t cumulative_time_1 = 0;
-    uint64_t cumulative_time_2 = 0;
-    for(int idx = 0; idx < (local_worksize*num_blocks); idx++) {
-        cumulative_time_1 += (stopClk[idx] - startClk[idx]);
-        cumulative_time_2 += (stopClk[idx+(local_worksize*num_blocks)] - startClk[idx+(local_worksize*num_blocks)]);
-    }
-    printf("Average Runtime of 1st Kernel = %12.4f cycles\n", (float)(cumulative_time_1)/(local_worksize*num_blocks));
-    printf("Average Runtime of 2nd Kernel = %12.4f cycles\n", (float)(cumulative_time_2)/(local_worksize*num_blocks));
 
     //printf("kernel + memcopy time = %lf ms\n", (timer4 - timer3) * 1000);
     //printf("kernel execution time = %lf ms\n", (timer2 - timer1) * 1000);

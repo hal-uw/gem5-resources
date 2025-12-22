@@ -75,14 +75,8 @@
  */
 __global__ void color1(int *row, int *col, int *node_value, int *color_array,
                        int *stop, int *max_d, const int color,
-                       const int num_nodes, const int num_edges,
-                       uint64_t *startClk, uint64_t *stopClk)
+                       const int num_nodes, const int num_edges)
 {
-    // start timing
-    uint64_t start = 0;
-    start = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-
     // Get my thread workitem id
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
@@ -112,13 +106,6 @@ __global__ void color1(int *row, int *col, int *node_value, int *color_array,
             max_d[tid] = maximum;
         }
     }
-    // stop timing
-    uint64_t stopCycle = 0;
-    stopCycle = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
 }
 
 
@@ -133,13 +120,8 @@ __global__ void color1(int *row, int *col, int *node_value, int *color_array,
  */
 __global__ void color2(int *node_value, int *color_array, int *max_d,
                        const int color, const int num_nodes,
-                       const int num_edges, uint64_t *startClk, uint64_t *stopClk)
+                       const int num_edges)
 {
-    // start timing
-    uint64_t start = 0;
-    start = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    
     // Get my workitem id
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
@@ -151,13 +133,7 @@ __global__ void color2(int *node_value, int *color_array, int *max_d,
                 color_array[tid] = color;
         }
     }
-    // stop timing
-    uint64_t stopCycle = 0;
-    stopCycle = __builtin_readcyclecounter();
-    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
+
 }
 
 #endif // KERNEL_MAX_H
