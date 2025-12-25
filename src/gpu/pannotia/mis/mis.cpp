@@ -65,6 +65,7 @@
 #include "../graph_parser/parse.h"
 #include "../graph_parser/util.h"
 #include "kernel.h"
+#include "../graph_parser/event_timer.h"
 
 #if defined(GEM5_FUSION) || defined(GEM5_FS)
 #include <stdint.h>
@@ -80,6 +81,9 @@
 void dump2file(int *adjmatrix, int num_nodes);
 void print_vector(int *vector, int num);
 void print_vectorf(float *vector, int num);
+
+TimingEvent kernel1;
+
 
 int main(int argc, char **argv)
 {
@@ -188,16 +192,6 @@ int main(int argc, char **argv)
 
 //    double time1 = gettime();
 
-#ifdef GEM5_FUSION
-    m5_work_begin(0, 0);
-#endif
-
-#ifdef GEM5_FS
-    m5op_addr = 0xFFFF0000;
-    map_m5_mem();
-    m5_work_begin_addr(0, 0);
-#endif
-
     // Copy data to device-side buffers
     err = hipMemcpy(row_d, csr->row_array, num_nodes * sizeof(int), hipMemcpyHostToDevice);
     if (err != hipSuccess) {
@@ -237,6 +231,17 @@ int main(int argc, char **argv)
     // Termination variable
     int stop = 1;
     int iterations = 0;
+    start_timer(&kernel1);
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+    m5_work_begin(0, 0)
+#elif GEM5_FS
+    m5op_addr = 0xFFFF0000;
+    map_m5_mem();
+    m5_work_begin_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+#endif    
+
     while (stop) {
         stop = 0;
 
@@ -272,20 +277,22 @@ int main(int argc, char **argv)
 
     hipDeviceSynchronize();
 
+    end_timer(&kernel1);
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+#elif GEM5_FS
+    m5_work_end_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+    unmap_m5_mem();
+#endif   
+    printf("Kernel 1 Time: %f ms\n", kernel1.elapsedTime);
+    free_timer(&kernel1);
+
     err = hipMemcpy(s_array, s_array_d, num_nodes * sizeof(int), hipMemcpyDeviceToHost);
     if (err != hipSuccess) {
         fprintf(stderr, "ERROR: hipMemcpy s_array_d failed (%s)\n", hipGetErrorString(err));
         return -1;
     }
-
-#ifdef GEM5_FUSION
-    m5_work_end(0, 0);
-#endif
-
-#ifdef GEM5_FS
-    m5_work_end_addr(0, 0);
-    unmap_m5_mem();
-#endif
 
 //    double time2 = gettime();
 

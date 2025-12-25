@@ -64,6 +64,7 @@
 #include "../graph_parser/parse.h"
 #include "../graph_parser/util.h"
 #include "kernel_maxmin.h"
+#include "../graph_parser/event_timer.h"
 
 #if defined(GEM5_FUSION) || defined(GEM5_FS)
 #include <stdint.h>
@@ -77,6 +78,8 @@
 #define RANGE 2048
 
 void print_vector(int *vector, int num);
+
+TimingEvent kernel1;
 
 int main(int argc, char **argv)
 {
@@ -179,16 +182,6 @@ int main(int argc, char **argv)
     // Copy data to device-side buffers
     double timer1 = gettime();
 
-#ifdef GEM5_FUSION
-    m5_work_begin(0, 0);
-#endif
-
-#ifdef GEM5_FS
-    m5op_addr = 0xFFFF0000;
-    map_m5_mem();
-    m5_work_begin_addr(0, 0);
-#endif
-
     err = hipMemcpy(color_d, color, num_nodes * sizeof(int), hipMemcpyHostToDevice);
     if (err != hipSuccess) {
         fprintf(stderr, "ERROR: hipMemcpy color_d (size:%d) => %s\n", num_nodes, hipGetErrorString(err));
@@ -229,6 +222,17 @@ int main(int argc, char **argv)
     // Main computation loop
     double timer3 = gettime();
 
+    start_timer(&kernel1);
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+    m5_work_begin(0, 0)
+#elif GEM5_FS
+    m5op_addr = 0xFFFF0000;
+    map_m5_mem();
+    m5_work_begin_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+#endif
+
     while (stop) {
 
         stop = 0;
@@ -259,6 +263,17 @@ int main(int argc, char **argv)
     }
     hipDeviceSynchronize();
 
+   end_timer(&kernel1);
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+#elif GEM5_FS
+    m5_work_end_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+    unmap_m5_mem();
+#endif
+    printf("Kernel 1 Time: %f ms\n", kernel1.elapsedTime);
+    free_timer(&kernel1);
+
     double timer4 = gettime();
 
     // Copy back the color array
@@ -267,15 +282,6 @@ int main(int argc, char **argv)
         printf("ERROR: hipMemcpy(): %s\n", hipGetErrorString(err));
         return -1;
     }
-
-#ifdef GEM5_FUSION
-    m5_work_end(0, 0);
-#endif
-
-#ifdef GEM5_FS
-    m5_work_end_addr(0, 0);
-    unmap_m5_mem();
-#endif
 
     double timer2 = gettime();
 

@@ -22,6 +22,12 @@ THE SOFTWARE.
 
 #include <stdio.h>
 #include "hip/hip_runtime.h"
+#ifdef GEM5_FUSION
+#include <util/m5/src/m5_mmap.h>
+#include <gem5/m5ops.h>
+#endif
+
+#define ITERS 50
 
 #define CHECK(cmd) \
 {\
@@ -39,14 +45,58 @@ template <typename T>
 __global__ void
 vector_square(T *C_d, const T *A_d, size_t N)
 {
+    // start timing
+    //asm volatile("s_barrier");
+    //uint64_t start = 0;
+    //start = __builtin_readcyclecounter();
+    //asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
+
     size_t offset = (hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x);
     size_t stride = hipBlockDim_x * hipGridDim_x ;
 
     for (size_t i=offset; i<N; i+=stride) {
         C_d[i] = A_d[i] * A_d[i];
     }
+
+        // stop timing
+    //asm volatile("s_barrier");
+    //uint64_t stop = 0;
+    //stop = __builtin_readcyclecounter();
+    //asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
+    // write time and data back to memory
+    //clk[offset] += stop - start;
+    }
+
+struct TimingEvent{
+    std::string name;
+    hipEvent_t start;
+    hipEvent_t end;
+    float elapsedTime;
+};
+
+
+void start_timer(TimingEvent* event){
+    hipError_t hipErr;
+    hipErr = hipEventCreate(&(event->start));
+    hipErr = hipEventCreate(&(event->end));
+    
+
+    hipEventRecord(event->start, 0);
 }
 
+void end_timer(TimingEvent* event){
+    hipEventRecord((event->end), 0);
+    hipEventSynchronize((event->end));
+    hipEventElapsedTime(&(event->elapsedTime), (event->start), (event->end));
+}
+
+void free_timer(TimingEvent* event){
+    hipError_t hipErr;
+    hipErr = hipEventDestroy(event->start);
+    hipErr = hipEventDestroy(event->end);
+}
+
+TimingEvent kernel1;
 
 int main(int argc, char *argv[])
 {
@@ -72,9 +122,40 @@ int main(int argc, char *argv[])
     const unsigned blocks = 512;
     const unsigned threadsPerBlock = 256;
 
-    printf ("info: launch 'vector_square' kernel\n");
-    hipLaunchKernelGGL(vector_square, dim3(blocks), dim3(threadsPerBlock), 0, 0, C_h, A_h, N);
+   printf ("info: launch 'vector_square' kernel\n");
+    //uint64_t *clk_g;
+    //hipMalloc(&clk_g, (N)*sizeof(uint64_t));
+    //hipMemset(clk_g, 0, (N)*sizeof(uint64_t));
+    #ifdef GEM5_FUSION
+        m5op_addr = 0xFFFF0000;
+        map_m5_mem();
+        m5_work_end_addr(0, 0);
+        m5_dump_reset_stats_addr(0, 0);
+    #endif
+    start_timer(&kernel1);
+
+    for (int i = 0; i < ITERS; i++) {
+        hipLaunchKernelGGL(vector_square, dim3(blocks), dim3(threadsPerBlock), 0, 0, C_h, A_h, N);
+        hipDeviceSynchronize();
+    }
     hipDeviceSynchronize();
+    end_timer(&kernel1);
+
+#ifdef GEM5_FUSION
+    m5_work_end_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+    unmap_m5_mem();
+#endif
+    printf("Kernel 1 Time: %f ms\n", kernel1.elapsedTime);
+    free_timer(&kernel1);
+    //uint64_t *clk = (uint64_t*) malloc(N*sizeof(uint64_t));
+    //hipMemcpy(clk, clk_g, N*sizeof(uint64_t), hipMemcpyDeviceToHost);
+
+    //uint64_t cumulative_time = 0;
+    //for(int idx = 0; idx < N; idx++) {
+    //    cumulative_time += clk[idx];
+    //}
+    //printf("Average Runtime  = %12.4f cycles\n", (float)(cumulative_time)/(N*ITERS));
 
     printf ("info: check result\n");
     for (size_t i=0; i<N; i++)  {

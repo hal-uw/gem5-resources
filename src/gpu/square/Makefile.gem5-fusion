@@ -1,0 +1,20 @@
+HIP_PATH?= /opt/rocm/hip
+HIPCC=$(HIP_PATH)/bin/hipcc
+
+BIN_DIR?= ./bin
+GEM5_ROOT ?= ../../../../gap-gem5
+CXXFLAGS += -I$(GEM5_ROOT) -I$(GEM5_ROOT)/include --save-temps
+LDFLAGS += -L$(GEM5_ROOT)/util/m5/build/x86/out -lm5
+
+square: $(BIN_DIR)/square
+
+$(BIN_DIR)/square: square.cpp $(BIN_DIR)
+	$(HIPCC) --amdgpu-target=gfx900,gfx902 $(CXXFLAGS) square.cpp -DGEM5_FUSION -o $(BIN_DIR)/square $(LDFLAGS)
+
+$(BIN_DIR):
+	mkdir -p $(BIN_DIR)
+
+clean:
+	rm -rf $(BIN_DIR)
+
+.PHONY: square clean

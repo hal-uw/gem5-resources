@@ -64,6 +64,7 @@
 #include "../graph_parser/parse.h"
 #include "../graph_parser/util.h"
 #include "kernel.h"
+#include "../graph_parser/event_timer.h"
 
 #if defined(GEM5_FUSION) || defined(GEM5_FS)
 #include <stdint.h>
@@ -75,9 +76,11 @@
 #endif
 
 // Iteration count
-#define ITER 20
+#define ITER 3
 
 void print_vectorf(float *vector, int num);
+
+TimingEvent kernel1;
 
 int main(int argc, char **argv)
 {
@@ -161,15 +164,6 @@ int main(int argc, char **argv)
 
 //    double timer1 = gettime();
 
-#ifdef GEM5_FUSION
-    m5_work_begin(0, 0);
-#endif
-
-#ifdef GEM5_FS
-    m5op_addr = 0xFFFF0000;
-    map_m5_mem();
-    m5_work_begin_addr(0, 0);
-#endif
 
     // Copy the data to the device-side buffers
     err = hipMemcpy(row_d, csr->row_array, num_nodes * sizeof(int), hipMemcpyHostToDevice);
@@ -202,7 +196,16 @@ int main(int argc, char **argv)
         fprintf(stderr, "ERROR: cudaLaunch failed (%s)\n", hipGetErrorString(err));
         return -1;
     }
-
+    start_timer(&kernel1);
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+    m5_work_begin(0, 0)
+#elif GEM5_FS
+    m5op_addr = 0xFFFF0000;
+    map_m5_mem();
+    m5_work_begin_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+#endif
     // Run PageRank for some iter. TO: convergence determination
     for (int i = 0; i < ITER; i++) {
         // Launch pagerank kernel 1
@@ -214,7 +217,16 @@ int main(int argc, char **argv)
                                       pagerank2_d, num_nodes, num_edges);
     }
     hipDeviceSynchronize();
-
+    end_timer(&kernel1);
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+#elif GEM5_FS
+    m5_work_end_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+    unmap_m5_mem();
+#endif
+    printf("Kernel 1 Time: %f ms\n", kernel1.elapsedTime);
+    free_timer(&kernel1);
 //    double timer4 = gettime();
 
     // Copy the rank buffer back
@@ -225,9 +237,6 @@ int main(int argc, char **argv)
         return -1;
     }
 
-#ifdef GEM5_FUSION
-    m5_work_end(0, 0);
-#endif
 
 #ifdef GEM5_FS
     m5_work_end_addr(0, 0);

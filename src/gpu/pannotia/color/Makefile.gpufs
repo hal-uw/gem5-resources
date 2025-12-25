@@ -8,7 +8,7 @@ MAX_CPP = coloring_max.cpp
 MAXMIN_CPP = coloring_maxmin.cpp
 
 # Assumes gem5 and gem5-resources share a common parent directory.
-GEM5_ROOT ?= ../../../../../gem5
+GEM5_ROOT ?= ../../../../../gap-gem5
 
 OPTS = -O3 -Wno-unused-result -DGEM5_FS -I$(GEM5_ROOT)/include -I$(GEM5_ROOT)
 BIN_DIR ?= ./bin.gpufs

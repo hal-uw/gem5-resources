@@ -72,6 +72,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include "../graph_parser/event_timer.h"
 
 #if defined(GEM5_FUSION) || defined(GEM5_FS)
 #include <stdint.h>
@@ -88,10 +89,12 @@
 #include <stdint.h>
 #define MAX_ITERS INT32_MAX
 #endif
-
+#define ITERS 3
 #define BIGNUM 999999
 #define TRUE 1
 #define FALSE 0
+
+TimingEvent kernel1;
 
 int main(int argc, char **argv)
 {
@@ -249,14 +252,9 @@ int main(int argc, char **argv)
 
     //double timer1 = gettime();
 
-#ifdef GEM5_FUSION
-    m5_work_begin(0, 0);
-#endif
-
 #ifdef GEM5_FS
     m5op_addr = 0xFFFF0000;
     map_m5_mem();
-    m5_work_begin_addr(0, 0);
 #endif
 
     // Copy the dist matrix to the device
@@ -272,10 +270,28 @@ int main(int argc, char **argv)
 
     //double timer3 = gettime();
     // Main computation loop
-    for (int k = 1; k < dim && k < MAX_ITERS; k++) {
+    start_timer(&kernel1);
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+//    m5_work_begin(0, 0);
+#elif GEM5_FS
+    m5_dump_reset_stats_addr(0, 0);
+//    m5_work_begin_addr(0, 0);
+#endif
+    for (int k = 1; k < dim && k < ITERS; k++) {
         hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, dist_d, next_d, dim, k);
         hipDeviceSynchronize();
     }
+    end_timer(&kernel1);
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+#elif GEM5_FS
+//    m5_work_end_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+    unmap_m5_mem();
+#endif
+    printf("Kernel 1 Time: %f ms\n", kernel1.elapsedTime);
+    free_timer(&kernel1);
 
     //double timer4 = gettime();
     err = hipMemcpy(result, dist_d, dim * dim * sizeof(int), hipMemcpyDeviceToHost);
@@ -283,15 +299,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "ERROR:  read back dist_d %d failed\n", err);
         return -1;
     }
-
-#ifdef GEM5_FUSION
-    m5_work_end(0, 0);
-#endif
-
-#ifdef GEM5_FS
-    m5_work_end_addr(0, 0);
-    unmap_m5_mem();
-#endif
 
     //double timer2 = gettime();
 
@@ -302,7 +309,7 @@ int main(int argc, char **argv)
         // Below is the verification part
         // Calculate on the CPU
         int *dist = distmatrix;
-        for (int k = 1; k < dim && k < MAX_ITERS; k++) {
+        for (int k = 1; k < dim && k < ITERS; k++) {
             for (int i = 0; i < dim; i++) {
                 for (int j = 0; j < dim; j++) {
                     if (dist[i * dim + k] + dist[k * dim + j] < dist[i * dim + j]) {

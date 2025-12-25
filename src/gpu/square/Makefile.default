@@ -4,13 +4,13 @@ HIPCC=$(HIP_PATH)/bin/hipcc
 EXECUTABLE = square.default
 CPPSRC = square.cpp
 
-OPTS = -O3 -Wno-unused-result
+OPTS = -O3 -Wno-unused-result --save-temps#--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13 --save-temps
 BIN_DIR?= ./bin.default
 
 square: $(BIN_DIR)/$(EXECUTABLE)
 
 $(BIN_DIR)/$(EXECUTABLE): $(CPPSRC) $(BIN_DIR)
-	$(HIPCC) $(OPTS) --offload-arch=gfx900,gfx90a,gfx942 $(CXXFLAGS) $(CPPSRC) -o $(BIN_DIR)/$(EXECUTABLE)
+	$(HIPCC) $(OPTS) --offload-arch=gfx906 $(CXXFLAGS) $(CPPSRC) -o $(BIN_DIR)/$(EXECUTABLE)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

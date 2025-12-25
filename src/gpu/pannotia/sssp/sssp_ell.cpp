@@ -65,6 +65,7 @@
 #include "../graph_parser/parse.h"
 #include "../graph_parser/util.h"
 #include "kernel.h"
+#include "../graph_parser/event_timer.h"
 
 #if defined(GEM5_FUSION) || defined(GEM5_FS)
 #include <stdint.h>
@@ -78,6 +79,9 @@
 #define BIGNUM 99999999
 
 void print_vector(int *vector, int num);
+
+TimingEvent kernel1;
+
 
 int main(int argc, char **argv)
 {
@@ -210,6 +214,17 @@ int main(int argc, char **argv)
 
     int stop = 1;
     int cnt = 0;
+
+    start_timer(&kernel1);
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+    m5_work_begin(0, 0)
+#elif GEM5_FS
+    m5op_addr = 0xFFFF0000;
+    map_m5_mem();
+    m5_work_begin_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+#endif
     // Main computation loop
     for (int i = 1; i < num_nodes; i++) {
         // Reset the termination variable
@@ -248,6 +263,17 @@ int main(int argc, char **argv)
         cnt++;
     }
     hipDeviceSynchronize();
+    end_timer(&kernel1);
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+#elif GEM5_FS
+    m5_work_end_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+    unmap_m5_mem();
+#endif
+    printf("Kernel 1 Time: %f ms\n", kernel1.elapsedTime);
+    free_timer(&kernel1);
+
     double timer4 = gettime();
 
     // Read the cost_array back
@@ -256,15 +282,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "ERROR: read vector_d1 (%s)\n", hipGetErrorString(err));
         return -1;
     }
-
-#ifdef GEM5_FUSION
-    m5_work_end(0, 0);
-#endif
-
-#ifdef GEM5_FS
-    m5_work_end_addr(0, 0);
-    unmap_m5_mem();
-#endif
 
     double timer2 = gettime();
 
