@@ -89,7 +89,7 @@
 #include <stdint.h>
 #define MAX_ITERS INT32_MAX
 #endif
-#define ITERS 3
+#define ITERS 10
 #define BIGNUM 999999
 #define TRUE 1
 #define FALSE 0
@@ -267,7 +267,9 @@ int main(int argc, char **argv)
     // Work dimension
     dim3 threads(16, 16, 1);
     dim3 grid(dim / 16, dim / 16, 1);
-
+    //Warmup
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, dist_d, next_d, dim, 1);
+    hipDeviceSynchronize();
     //double timer3 = gettime();
     // Main computation loop
     start_timer(&kernel1);
@@ -278,7 +280,7 @@ int main(int argc, char **argv)
     m5_dump_reset_stats_addr(0, 0);
 //    m5_work_begin_addr(0, 0);
 #endif
-    for (int k = 1; k < dim && k < ITERS; k++) {
+    for (int k = 2; k < dim && k < ITERS; k++) {
         hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, dist_d, next_d, dim, k);
         hipDeviceSynchronize();
     }

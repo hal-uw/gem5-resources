@@ -121,7 +121,8 @@ int main(int argc, char *argv[])
 
     const unsigned blocks = 512;
     const unsigned threadsPerBlock = 256;
-
+    hipLaunchKernelGGL(vector_square, dim3(blocks), dim3(threadsPerBlock), 0, 0, C_h, A_h, N);
+    hipDeviceSynchronize();
    printf ("info: launch 'vector_square' kernel\n");
     //uint64_t *clk_g;
     //hipMalloc(&clk_g, (N)*sizeof(uint64_t));

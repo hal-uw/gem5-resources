@@ -86,6 +86,8 @@
 void print_vector(int *vector, int num);
 void print_vectorf(float *vector, int num);
 
+TimingEvent kernel1;
+
 int main(int argc, char **argv)
 {
     char *tmpchar;

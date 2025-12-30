@@ -3,7 +3,7 @@ HIPCC=$(HIP_PATH)/bin/hipcc
 
 BIN_DIR?= ./bin
 GEM5_ROOT ?= ../../../../gap-gem5
-CXXFLAGS += -I$(GEM5_ROOT) -I$(GEM5_ROOT)/include --save-temps
+CXXFLAGS += -I$(GEM5_ROOT) -I$(GEM5_ROOT)/include
 LDFLAGS += -L$(GEM5_ROOT)/util/m5/build/x86/out -lm5
 
 square: $(BIN_DIR)/square

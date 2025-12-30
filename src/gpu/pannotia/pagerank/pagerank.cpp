@@ -76,7 +76,7 @@
 #endif
 
 // Iteration count
-#define ITER 3
+#define ITER 10
 
 void print_vectorf(float *vector, int num);
 

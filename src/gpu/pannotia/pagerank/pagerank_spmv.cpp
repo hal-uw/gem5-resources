@@ -76,7 +76,7 @@
 #endif
 
 // Iteration count
-#define ITER 20
+#define ITER 10
 
 void print_vectorf(float *vector, int num);
 
@@ -249,7 +249,8 @@ int main(int argc, char **argv)
     unmap_m5_mem();
 #endif
     double timer4 = gettime();
-
+    printf("Kernel 1 Time: %f ms\n", kernel1.elapsedTime);
+    free_timer(&kernel1);
     // Copy the rank buffer back
     err = hipMemcpy(pagerank_array, pagerank1_d, num_nodes * sizeof(float), hipMemcpyDeviceToHost);
 

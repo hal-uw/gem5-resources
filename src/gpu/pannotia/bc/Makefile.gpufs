@@ -15,7 +15,7 @@ LDFLAGS += -L$(GEM5_ROOT)/util/m5/build/x86/out -lm5
 all: $(BIN_DIR)/$(EXECUTABLE)
 
 $(BIN_DIR)/$(EXECUTABLE): $(CPPSRC) ../graph_parser/parse.cpp ../graph_parser/util.cpp $(BIN_DIR)
-	$(HIPCC) $(OPTS) --offload-arch=gfx900,gfx90a,gfx942 $(CXXFLAGS) ../graph_parser/util.cpp $(CPPSRC) -o $(BIN_DIR)/$(EXECUTABLE) $(LDFLAGS)
+	$(HIPCC) $(OPTS) --offload-arch=gfx900 $(CXXFLAGS) ../graph_parser/util.cpp $(CPPSRC) -o $(BIN_DIR)/$(EXECUTABLE) $(LDFLAGS)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

@@ -9,7 +9,7 @@ CFLAGS += -I$(GEM5_ROOT)/include -I/../graph_parser -I$(GEM5_ROOT)
 LDFLAGS += -L$(GEM5_ROOT)/util/m5/build/x86/out -lm5
 
 BASEEXE = pagerank
-VARIANT ?= DEFAULT
+VARIANT ?= SPMV
 ifeq ($(VARIANT),DEFAULT)
     EXECUTABLE = $(BASEEXE).gpufs
     CPPFILES += pagerank.cpp

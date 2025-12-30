@@ -283,7 +283,7 @@ int main(int argc, char **argv)
     //printf("kernel time = %lf ms\n", (timer4 - timer3) * 1000);
     printf("number iterations = %d\n", cnt);
 
-#if 1
+#if 0
     // Print cost_array
     print_vector(cost_array, num_nodes);
 #endif
