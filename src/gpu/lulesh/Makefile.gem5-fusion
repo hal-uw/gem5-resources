@@ -1,0 +1,15 @@
+BIN_DIR ?= ./bin.gem5
+HIP_PATH ?= /opt/rocm
+GEM5_ROOT ?= ../../../../gap-gem5
+CXXFLAGS += -I$(GEM5_ROOT) -I$(GEM5_ROOT)/include
+LDFLAGS += -L$(GEM5_ROOT)/util/m5/build/x86/out -lm5
+
+all: $(BIN_DIR)
+	$(HIP_PATH)/bin/hipcc src/lulesh.hip.cc $(CXXFLAGS) -o $(BIN_DIR)/lulesh.gem5-fusion --offload-arch=gfx900 -DGEM5_FUSION $(LDFLAGS)
+
+$(BIN_DIR):
+	mkdir -p $(BIN_DIR)
+
+clean:
+	rm -f $(BIN_DIR)/lulesh.gem5-fusion
+	rmdir --ignore-fail-on-non-empty $(BIN_DIR)

@@ -1,11 +1,17 @@
-BIN_DIR ?= ./bin
-HIP_PATH ?= /opt/rocm/hip
-
-all: $(BIN_DIR)
-	$(HIP_PATH)/bin/hipcc src/lulesh.hip.cc -o $(BIN_DIR)/lulesh --amdgpu-target=gfx900,gfx902
-
-$(BIN_DIR):
-	mkdir -p $(BIN_DIR)
+default:
+	make -f Makefile.default
 
 clean:
-	rm -rf $(BIN_DIR)
+	make -f Makefile.default clean
+
+gem5-fusion:
+	make -f Makefile.gem5-fusion
+
+clean-gem5-fusion:
+	make -f Makefile.gem5-fusion clean
+
+gpufs:
+	make -f Makefile.gpufs
+
+clean-gpufs:
+	make -f Makefile.gpufs clean

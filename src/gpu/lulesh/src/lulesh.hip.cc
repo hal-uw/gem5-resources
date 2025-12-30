@@ -67,7 +67,14 @@ Additional BSD Notice
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#if defined(GEM5_FUSION) || defined(GEM5_FS)
+#include <stdint.h>
+#include <gem5/m5ops.h>
+#endif
 
+#ifdef GEM5_FS
+#include <util/m5/src/m5_mmap.h>
+#endif
 #define LULESH_SHOW_PROGRESS 1
 
 enum { VolumeError = -1, QStopError = -2 } ;
@@ -125,6 +132,36 @@ __host__            inline real10 FMAX(real10 arg1,real10 arg2) { return fmaxl(a
  */
 #define PAD_DIV(nbytes, align)  (((nbytes) + (align) - 1) / (align))
 #define PAD(nbytes, align)  (PAD_DIV((nbytes),(align)) * (align))
+
+struct TimingEvent{
+    std::string name;
+    hipEvent_t start;
+    hipEvent_t end;
+    float elapsedTime;
+};
+
+void start_timer(TimingEvent* event){
+    hipError_t hipErr;
+    hipErr = hipEventCreate(&(event->start));
+    hipErr = hipEventCreate(&(event->end));
+    
+
+    hipEventRecord(event->start, 0);
+}
+
+void end_timer(TimingEvent* event){
+    hipEventRecord((event->end), 0);
+    hipEventSynchronize((event->end));
+    hipEventElapsedTime(&(event->elapsedTime), (event->start), (event->end));
+}
+
+void free_timer(TimingEvent* event){
+    hipError_t hipErr;
+    hipErr = hipEventDestroy(event->start);
+    hipErr = hipEventDestroy(event->end);
+}
+
+TimingEvent kernel1;
 
 /* More general version of reduceInPlacePOT (this works for arbitrary
  * numThreadsPerBlock <= 1024). Again, conditionals on
@@ -5643,6 +5680,16 @@ int main(int argc, char *argv[])
   while (its<50) {
 #else
   //while(mesh.time() < mesh.stoptime() ) {
+    start_timer(&kernel1);
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+    m5_work_begin(0, 0)
+#elif GEM5_FS
+    m5op_addr = 0xFFFF0000;
+    map_m5_mem();
+    m5_work_begin_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+#endif
   while(its < numIters) {
 #endif
           TimeIncrement() ;
@@ -5654,6 +5701,16 @@ int main(int argc, char *argv[])
                  double(mesh.time()), double(mesh.deltatime()) ) ;
 #endif
   }
+  end_timer(&kernel1);
+#ifdef GEM5_FUSION
+  m5_dump_reset_stats(0, 0);
+#elif GEM5_FS
+  m5_work_end_addr(0, 0);
+  m5_dump_reset_stats_addr(0, 0);
+  unmap_m5_mem();
+#endif
+  printf("Kernel 1 Time: %f ms\n", kernel1.elapsedTime);
+  free_timer(&kernel1);
   printf("iterations: %d\n",its);
 
 #if LULESH_WRITE_OUTPUT
