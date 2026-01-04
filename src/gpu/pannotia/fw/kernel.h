@@ -69,7 +69,7 @@
  * @param   k     Current iteration number
  */
 __global__ void
-floydwarshall(int *dist, int *next, int dim, int k, uint64_t *startClk, uint64_t *stopClk)
+floydwarshall(int *dist, int *next, int dim, int k, uint64_t *Clk)
 {
     // start timing
     uint64_t start = 0;
@@ -94,8 +94,7 @@ floydwarshall(int *dist, int *next, int dim, int k, uint64_t *startClk, uint64_t
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time and data back to memory
     uint32_t tid = (j*hipBlockDim_x * hipGridDim_x) + i;
-    startClk[tid] = start;
-    stopClk[tid] = stop;
+    Clk[tid] = stop - start;
 }
 
 #endif // KERNEL_H

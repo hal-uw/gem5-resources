@@ -279,15 +279,13 @@ int main(int argc, char **argv)
     dim3 threads(16, 16, 1);
     dim3 grid(dim / 16, dim / 16, 1);
 
-    uint64_t *startClk_g;
-    uint64_t *stopClk_g;
-    gpuErrchk( hipMalloc(&startClk_g, (dim*dim)*sizeof(uint64_t)) );
-    gpuErrchk( hipMalloc(&stopClk_g, (dim*dim)*sizeof(uint64_t)) );
+    uint64_t *clk_g;
+    gpuErrchk( hipMalloc(&clk_g, (dim*dim)*sizeof(uint64_t)) );
 
     //double timer3 = gettime();
     // Main computation loop
     for (int k = 1; k < dim && k < MAX_ITERS; k++) {
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, dist_d, next_d, dim, k, startClk_g, stopClk_g);
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, dist_d, next_d, dim, k, clk_g);
         hipDeviceSynchronize();
     }
 
@@ -298,14 +296,12 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    uint64_t *startClk = (uint64_t*) malloc(dim*dim*sizeof(uint64_t));
-    uint64_t *stopClk = (uint64_t*) malloc(dim*dim*sizeof(uint64_t));
-    gpuErrchk( hipMemcpy(startClk, startClk_g, dim*dim*sizeof(uint64_t), hipMemcpyDeviceToHost) );
-    gpuErrchk( hipMemcpy(stopClk, stopClk_g, dim*dim*sizeof(uint64_t), hipMemcpyDeviceToHost) );
+    uint64_t *clk = (uint64_t*) malloc(dim*dim*sizeof(uint64_t));
+    gpuErrchk( hipMemcpy(clk, clk_g, dim*dim*sizeof(uint64_t), hipMemcpyDeviceToHost) );
 
     uint64_t cumulative_time = 0;
     for(int idx = 0; idx < dim*dim; idx++) {
-        cumulative_time += (stopClk[idx] - startClk[idx]);
+        cumulative_time += clk[idx];
     }
     printf("Average Runtime  = %12.4f cycles\n", (float)(cumulative_time)/(dim*dim));
 
