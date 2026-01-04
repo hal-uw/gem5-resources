@@ -98,7 +98,7 @@ init(int *s_array, int *c_array, int *cu_array, int num_nodes, int num_edges)
 */
 __global__ void
 mis1(int *row, int *col, int *node_value, int *s_array, int *c_array,
-     int *min_array, int *stop, int num_nodes, int num_edges, uint64_t *startClk, uint64_t *stopClk)
+     int *min_array, int *stop, int num_nodes, int num_edges, uint64_t* Clk)
 {
     // start timing
     uint64_t start = 0;
@@ -138,8 +138,7 @@ mis1(int *row, int *col, int *node_value, int *s_array, int *c_array,
     stopCycle = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
+    Clk[tid] = stopCycle - start;
 }
 
 /**
@@ -156,11 +155,11 @@ mis1(int *row, int *col, int *node_value, int *s_array, int *c_array,
 */
 __global__ void
 mis2(int *row, int *col, int *node_value, int *s_array, int *c_array,
-     int *cu_array, int *min_array, int num_nodes, int num_edges, uint64_t *startClk, uint64_t *stopClk)
+     int *cu_array, int *min_array, int num_nodes, int num_edges, uint64_t *Clk)
 {
     // start timing
-    uint64_t start = 0;
-    start = __builtin_readcyclecounter();
+    uint64_t startCycle = 0;
+    startCycle = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
 
     // Get my workitem id
@@ -200,8 +199,7 @@ mis2(int *row, int *col, int *node_value, int *s_array, int *c_array,
     stop = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stop;
+    Clk[tid] = stop - startCycle;
 }
 
 /**
@@ -211,7 +209,7 @@ mis2(int *row, int *col, int *node_value, int *s_array, int *c_array,
 * @param num_nodes    number of vertices
 */
 __global__ void
-mis3(int *cu_array, int *c_array, int num_nodes, uint64_t *startClk, uint64_t *stopClk)
+mis3(int *cu_array, int *c_array, int num_nodes, uint64_t *Clk)
 {
     // start timing
     uint64_t start = 0;
@@ -231,8 +229,7 @@ mis3(int *cu_array, int *c_array, int num_nodes, uint64_t *startClk, uint64_t *s
     stop = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stop;
+    Clk[tid] = stop - start;
 }
 
 #endif // KERNEL_H
