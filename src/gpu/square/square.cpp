@@ -22,7 +22,12 @@ THE SOFTWARE.
 
 #include <stdio.h>
 #include "hip/hip_runtime.h"
+#ifdef GEM5_FUSION
+#include <util/m5/src/m5_mmap.h>
+#include <gem5/m5ops.h>
+#endif
 
+#define ITERS 50
 #define CHECK(cmd) \
 {\
     hipError_t error  = cmd;\
@@ -85,11 +90,22 @@ int main(int argc, char *argv[])
 
     uint64_t *clk_g;
     hipMalloc(&clk_g, sizeof(uint64_t)*blocks*threadsPerBlock);
-
+    #ifdef GEM5_FUSION
+        m5op_addr = 0xFFFF0000;
+        map_m5_mem();
+        m5_dump_reset_stats_addr(0, 0);
+    #endif
     printf ("info: launch 'vector_square' kernel\n");
-    hipLaunchKernelGGL(vector_square, dim3(blocks), dim3(threadsPerBlock), 0, 0, C_h, A_h, N, clk_g);
-    hipDeviceSynchronize();
+    for (int i = 0; i < ITERS; i++) {
+        hipLaunchKernelGGL(vector_square, dim3(blocks), dim3(threadsPerBlock), 0, 0, C_h, A_h, N, clk_g);
+        hipDeviceSynchronize();
+    }
 
+#ifdef GEM5_FUSION
+    m5_work_end_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+    unmap_m5_mem();
+#endif
     uint64_t *clk = (uint64_t*) malloc(sizeof(uint64_t)*blocks*threadsPerBlock);
     hipMemcpy(clk, clk_g, sizeof(uint64_t)*blocks*threadsPerBlock, hipMemcpyDeviceToHost) ;
 

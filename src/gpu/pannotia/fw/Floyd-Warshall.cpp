@@ -83,7 +83,7 @@
 #endif
 
 #if defined(GEM5_FUSION) || defined(GEM5_FS)
-#define MAX_ITERS 192
+#define MAX_ITERS 10
 #else
 #include <stdint.h>
 #define MAX_ITERS INT32_MAX
@@ -258,14 +258,9 @@ int main(int argc, char **argv)
 
     //double timer1 = gettime();
 
-#ifdef GEM5_FUSION
-    m5_work_begin(0, 0);
-#endif
-
 #ifdef GEM5_FS
     m5op_addr = 0xFFFF0000;
     map_m5_mem();
-    m5_work_begin_addr(0, 0);
 #endif
 
     // Copy the dist matrix to the device
@@ -281,14 +276,26 @@ int main(int argc, char **argv)
 
     uint64_t *clk_g;
     gpuErrchk( hipMalloc(&clk_g, (dim*dim)*sizeof(uint64_t)) );
-
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+//    m5_work_begin(0, 0);
+#elif GEM5_FS
+    m5_dump_reset_stats_addr(0, 0);
+//    m5_work_begin_addr(0, 0);
+#endif
     //double timer3 = gettime();
     // Main computation loop
     for (int k = 1; k < dim && k < MAX_ITERS; k++) {
         hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, dist_d, next_d, dim, k, clk_g);
         hipDeviceSynchronize();
     }
-
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+#elif GEM5_FS
+//    m5_work_end_addr(0, 0);
+    m5_dump_reset_stats_addr(0, 0);
+    unmap_m5_mem();
+#endif
     //double timer4 = gettime();
     err = hipMemcpy(result, dist_d, dim * dim * sizeof(int), hipMemcpyDeviceToHost);
     if (err != hipSuccess) {
@@ -304,15 +311,6 @@ int main(int argc, char **argv)
         cumulative_time += clk[idx];
     }
     printf("Average Runtime  = %12.4f cycles\n", (float)(cumulative_time)/(dim*dim));
-
-#ifdef GEM5_FUSION
-    m5_work_end(0, 0);
-#endif
-
-#ifdef GEM5_FS
-    m5_work_end_addr(0, 0);
-    unmap_m5_mem();
-#endif
 
     //double timer2 = gettime();
 
