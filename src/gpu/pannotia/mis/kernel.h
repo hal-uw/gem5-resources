@@ -138,7 +138,7 @@ mis1(int *row, int *col, int *node_value, int *s_array, int *c_array,
     stopCycle = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    Clk[tid] = stopCycle - start;
+    Clk[tid] += stopCycle - start;
 }
 
 /**
@@ -199,7 +199,7 @@ mis2(int *row, int *col, int *node_value, int *s_array, int *c_array,
     stop = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    Clk[tid] = stop - startCycle;
+    Clk[tid] += stop - startCycle;
 }
 
 /**
@@ -229,7 +229,7 @@ mis3(int *cu_array, int *c_array, int num_nodes, uint64_t *Clk)
     stop = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    Clk[tid] = stop - start;
+    Clk[tid] += stop - start;
 }
 
 #endif // KERNEL_H

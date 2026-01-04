@@ -60,7 +60,7 @@ vector_square(T *C_d, const T *A_d, size_t N, uint64_t *clk)
     uint64_t stop = 0;
     stop = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
-    clk[offset] = stop - start;
+    clk[offset] += stop - start;
 }
 
 
@@ -90,6 +90,7 @@ int main(int argc, char *argv[])
 
     uint64_t *clk_g;
     hipMalloc(&clk_g, sizeof(uint64_t)*blocks*threadsPerBlock);
+    hipMemset(clk_g, 0, sizeof(uint64_t)*blocks*threadsPerBlock);
     #ifdef GEM5_FUSION
         m5op_addr = 0xFFFF0000;
         map_m5_mem();

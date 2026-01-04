@@ -197,14 +197,9 @@ int main(int argc, char **argv)
 
     double time1 = gettime();
 
-#ifdef GEM5_FUSION
-    m5_work_begin(0, 0);
-#endif
-
 #ifdef GEM5_FS
     m5op_addr = 0xFFFF0000;
     map_m5_mem();
-    m5_work_begin_addr(0, 0);
 #endif
 
     // Copy data to device-side buffers
@@ -233,6 +228,7 @@ int main(int argc, char **argv)
     dim3 threads(block_size,  1, 1);
     dim3 grid(num_blocks, 1, 1);
 
+
     // Launch the initialization kernel
     hipLaunchKernelGGL(HIP_KERNEL_NAME(init), dim3(grid), dim3(threads), 0, 0, s_array_d, c_array_d, c_array_u_d,
                              num_nodes, num_edges);
@@ -245,10 +241,16 @@ int main(int argc, char **argv)
 
     uint64_t *clk_g;
     gpuErrchk( hipMalloc(&clk_g, (3*block_size*num_blocks)*sizeof(uint64_t)) );
+    gpuErrchk(hipMemset(clk_g, 0, (3*block_size*num_blocks)*sizeof(uint64_t)) );
 
     // Termination variable
     int stop = 1;
     int iterations = 0;
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+#elif GEM5_FS
+    m5_dump_reset_stats_addr(0, 0);
+#endif
     while (stop) {
         stop = 0;
 
@@ -285,6 +287,12 @@ int main(int argc, char **argv)
 
     hipDeviceSynchronize();
 
+    #ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+#elif GEM5_FS
+    m5_dump_reset_stats_addr(0, 0);
+#endif
+
     err = hipMemcpy(s_array, s_array_d, num_nodes * sizeof(int), hipMemcpyDeviceToHost);
     if (err != hipSuccess) {
         fprintf(stderr, "ERROR: hipMemcpy s_array_d failed (%s)\n", hipGetErrorString(err));
@@ -294,12 +302,8 @@ int main(int argc, char **argv)
     uint64_t *clk = (uint64_t*) malloc(3*block_size*num_blocks*sizeof(uint64_t));
     gpuErrchk( hipMemcpy(clk, clk_g, 3*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
 
-#ifdef GEM5_FUSION
-    m5_work_end(0, 0);
-#endif
 
 #ifdef GEM5_FS
-    m5_work_end_addr(0, 0);
     unmap_m5_mem();
 #endif
 

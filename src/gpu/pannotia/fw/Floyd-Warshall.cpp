@@ -276,6 +276,8 @@ int main(int argc, char **argv)
 
     uint64_t *clk_g;
     gpuErrchk( hipMalloc(&clk_g, (dim*dim)*sizeof(uint64_t)) );
+    gpuErrchk(hipMemset(clk_g, 0, (dim*dim)*sizeof(uint64_t)) );
+
 #ifdef GEM5_FUSION
     m5_dump_reset_stats(0, 0);
 //    m5_work_begin(0, 0);

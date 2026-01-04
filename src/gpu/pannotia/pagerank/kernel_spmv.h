@@ -125,7 +125,7 @@ inicsr(int *row, int *col, float *data, int *col_cnt, int num_nodes,
  */
 __global__ void
 spmv_csr_scalar_kernel(const int num_nodes, int *row, int *col, float *data,
-                       float *x, float *y, uint64_t *startClk, uint64_t *stopClk)
+                       float *x, float *y, uint64_t *clk)
 {
     // start timing
     uint64_t start = 0;
@@ -151,8 +151,7 @@ spmv_csr_scalar_kernel(const int num_nodes, int *row, int *col, float *data,
     stop = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stop;
+    clk[tid] += stop - start;
 }
 
 /**
@@ -162,7 +161,7 @@ spmv_csr_scalar_kernel(const int num_nodes, int *row, int *col, float *data,
  * @param   num_nodes    number of vertices
  */
 __global__ void
-pagerank2(float *page_rank1, float *page_rank2, const int num_nodes, uint64_t *startClk, uint64_t *stopClk)
+pagerank2(float *page_rank1, float *page_rank2, const int num_nodes, uint64_t *clk)
 {
     // start timing
     uint64_t start = 0;
@@ -181,8 +180,7 @@ pagerank2(float *page_rank1, float *page_rank2, const int num_nodes, uint64_t *s
     stop = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stop;
+    clk[tid] += stop-start;
 }
 
 #endif // KERNEL_SPMV_H

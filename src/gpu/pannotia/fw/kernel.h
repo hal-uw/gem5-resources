@@ -94,7 +94,7 @@ floydwarshall(int *dist, int *next, int dim, int k, uint64_t *Clk)
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time and data back to memory
     uint32_t tid = (j*hipBlockDim_x * hipGridDim_x) + i;
-    Clk[tid] = stop - start;
+    Clk[tid] += stop - start;
 }
 
 #endif // KERNEL_H

@@ -79,7 +79,7 @@
 __global__ void color1(int *row, int *col, int *node_value, int *color_array,
                        int *stop, int *max_d, int *min_d, const int color,
                        const int num_nodes, const int num_edges,
-                       uint64_t *startClk, uint64_t *stopClk)
+                    uint64_t *clk)
 {
     // start timing
     uint64_t start = 0;
@@ -124,8 +124,7 @@ __global__ void color1(int *row, int *col, int *node_value, int *color_array,
     stopCycle = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
+    clk[tid] += stopCycle - start;
 }
 
 /**
@@ -140,7 +139,7 @@ __global__ void color1(int *row, int *col, int *node_value, int *color_array,
  */
 __global__ void color2(int *node_value, int *color_array, int *max_d,
                        int *min_d, const int color, const int num_nodes,
-                       const int num_edges, uint64_t *startClk, uint64_t *stopClk)
+                       const int num_edges, uint64_t *clk)
 {
 
     // start timing
@@ -165,8 +164,7 @@ __global__ void color2(int *node_value, int *color_array, int *max_d,
     stopCycle = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
+    clk[tid] += start - stopCycle;
 }
 
 /**

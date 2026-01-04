@@ -220,11 +220,17 @@ int main(int argc, char **argv)
     int stop = 1;
     int cnt = 0;
 
-    uint64_t *startClk_g;
-    uint64_t *stopClk_g;
-    gpuErrchk( hipMalloc(&startClk_g, (3*block_size*num_blocks)*sizeof(uint64_t)) );
-    gpuErrchk( hipMalloc(&stopClk_g, (3*block_size*num_blocks)*sizeof(uint64_t)) );
+    uint64_t *clk_g;
+    gpuErrchk( hipMalloc(&clk_g, (3*block_size*num_blocks)*sizeof(uint64_t)) );
+    gpuErrchk(hipMemset(clk_g, 0, (3*block_size*num_blocks)*sizeof(uint64_t)) );
 
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+//    m5_work_begin(0, 0);
+#elif GEM5_FS
+    m5_dump_reset_stats_addr(0, 0);
+//    m5_work_begin_addr(0, 0);
+#endif
     // Main computation loop
     for (int i = 1; i < num_nodes; i++) {
         // Reset the termination variable
@@ -238,18 +244,18 @@ int main(int argc, char **argv)
         }
 
         // Launch the assignment kernel
-        hipLaunchKernelGGL(vector_assign, dim3(grid), dim3(threads), 0, 0, vector_d1, vector_d2, num_nodes, startClk_g, stopClk_g);
+        hipLaunchKernelGGL(vector_assign, dim3(grid), dim3(threads), 0, 0, vector_d1, vector_d2, num_nodes, clk_g);
 
         // Launch the min.+ kernel
         hipLaunchKernelGGL(ell_min_dot_plus_kernel, dim3(grid), dim3(threads), 0, 0, num_nodes, height,
                                                     ell_col_d, ell_data_d,
                                                     vector_d1, vector_d2,
-                                                    startClk_g + (num_blocks*block_size), stopClk_g + (num_blocks*block_size));
+                                                    clk_g + (num_blocks*block_size));
 
         // Launch the check kernel
         hipLaunchKernelGGL(vector_diff, dim3(grid), dim3(threads), 0, 0, vector_d1, vector_d2,
                                         stop_d, num_nodes,
-                                        startClk_g + (2*num_blocks*block_size), stopClk_g + (2*num_blocks*block_size));
+                                        clk_g + (2*num_blocks*block_size));
 
         // Read the termination variable back
         err = hipMemcpy(&stop, stop_d, sizeof(int), hipMemcpyDeviceToHost);
@@ -265,6 +271,13 @@ int main(int argc, char **argv)
         cnt++;
     }
     hipDeviceSynchronize();
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+//    m5_work_begin(0, 0);
+#elif GEM5_FS
+    m5_dump_reset_stats_addr(0, 0);
+//    m5_work_begin_addr(0, 0);
+#endif
     double timer4 = gettime();
 
     // Read the cost_array back
@@ -274,10 +287,8 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    uint64_t *startClk = (uint64_t*) malloc(3*block_size*num_blocks*sizeof(uint64_t));
-    uint64_t *stopClk = (uint64_t*) malloc(3*block_size*num_blocks*sizeof(uint64_t));
-    gpuErrchk( hipMemcpy(startClk, startClk_g, 3*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
-    gpuErrchk( hipMemcpy(stopClk, stopClk_g, 3*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
+    uint64_t *clk = (uint64_t*) malloc(3*block_size*num_blocks*sizeof(uint64_t));
+    gpuErrchk( hipMemcpy(clk, clk_g, 3*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
 
 #ifdef GEM5_FUSION
     m5_work_end(0, 0);
@@ -294,9 +305,9 @@ int main(int argc, char **argv)
     uint64_t cumulative_time_2 = 0;
     uint64_t cumulative_time_3 = 0;
     for(int idx = 0; idx < (num_blocks*block_size); idx++) {
-        cumulative_time_1 += (stopClk[idx] - startClk[idx]);
-        cumulative_time_2 += (stopClk[idx+(num_blocks*block_size)] - startClk[idx+(num_blocks*block_size)]);
-        cumulative_time_3 += (stopClk[idx+(2*num_blocks*block_size)] - startClk[idx+(2*num_blocks*block_size)]);
+        cumulative_time_1 += (clk[idx]);
+        cumulative_time_2 += (clk[idx+(num_blocks*block_size)]);
+        cumulative_time_3 += (clk[idx+(2*num_blocks*block_size)]);
     }
     printf("Average Runtime of 1st Kernel = %12.4f cycles\n", (float)(cumulative_time_1)/(block_size*num_blocks));
     printf("Average Runtime of 2nd Kernel = %12.4f cycles\n", (float)(cumulative_time_2)/(block_size*num_blocks));

@@ -73,7 +73,7 @@
  */
 __global__ void
 pagerank1(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
-          const int num_nodes, const int num_edges, uint64_t *startClk, uint64_t *stopClk)
+          const int num_nodes, const int num_edges, uint64_t *clk)
 {
     // start timing
     uint64_t start = 0;
@@ -107,8 +107,7 @@ pagerank1(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
     stop = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stop;
+    clk[tid] += stop-start;
 }
 
 /**
@@ -123,7 +122,7 @@ pagerank1(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
  */
 __global__ void
 pagerank2(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
-          const int num_nodes, const int num_edges, uint64_t *startClk, uint64_t *stopClk)
+          const int num_nodes, const int num_edges, uint64_t *clk)
 {
     // start timing
     uint64_t start = 0;
@@ -144,8 +143,7 @@ pagerank2(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
     stop = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stop;
+    clk[tid] += stop-start;
 }
 
 /**

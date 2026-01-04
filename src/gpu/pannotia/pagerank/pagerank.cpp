@@ -213,32 +213,41 @@ int main(int argc, char **argv)
     }
 
 
-    uint64_t *startClk_g;
-    uint64_t *stopClk_g;
-    gpuErrchk( hipMalloc(&startClk_g, (2*block_size*num_blocks)*sizeof(uint64_t)) );
-    gpuErrchk( hipMalloc(&stopClk_g, (2*block_size*num_blocks)*sizeof(uint64_t)) );
-    
+    uint64_t *clk_g;
+    gpuErrchk( hipMalloc(&clk_g, (2*block_size*num_blocks)*sizeof(uint64_t)) );
+    gpuErrchk(hipMemset(clk_g, 0, (2*block_size*num_blocks)*sizeof(uint64_t)) );
     // Run PageRank for some iter. TO: convergence determination
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+//    m5_work_begin(0, 0);
+#elif GEM5_FS
+    m5_dump_reset_stats_addr(0, 0);
+//    m5_work_begin_addr(0, 0);
+#endif
     for (int i = 0; i < ITER; i++) {
         // Launch pagerank kernel 1
         hipLaunchKernelGGL(HIP_KERNEL_NAME(pagerank1), dim3(grid), dim3(threads), 0, 0, row_d, col_d, data_d, pagerank1_d,
-                                      pagerank2_d, num_nodes, num_edges, startClk_g, stopClk_g);
+                                      pagerank2_d, num_nodes, num_edges, clk_g);
 
         // Launch pagerank kernel 2
         hipLaunchKernelGGL(HIP_KERNEL_NAME(pagerank2), dim3(grid), dim3(threads), 0, 0, row_d, col_d, data_d, pagerank1_d,
-                                      pagerank2_d, num_nodes, num_edges, startClk_g + (num_blocks*block_size), stopClk_g + (num_blocks*block_size));
+                                      pagerank2_d, num_nodes, num_edges, clk_g + (num_blocks*block_size));
     }
     hipDeviceSynchronize();
-
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+//    m5_work_begin(0, 0);
+#elif GEM5_FS
+    m5_dump_reset_stats_addr(0, 0);
+//    m5_work_begin_addr(0, 0);
+#endif
     double timer4 = gettime();
 
     // Copy the rank buffer back
     err = hipMemcpy(rank_array, pagerank1_d, num_nodes * sizeof(float), hipMemcpyDeviceToHost);
 
-    uint64_t *startClk = (uint64_t*) malloc(2*block_size*num_blocks*sizeof(uint64_t));
-    uint64_t *stopClk = (uint64_t*) malloc(2*block_size*num_blocks*sizeof(uint64_t));
-    gpuErrchk( hipMemcpy(startClk, startClk_g, 2*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
-    gpuErrchk( hipMemcpy(stopClk, stopClk_g, 2*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
+    uint64_t *clk = (uint64_t*) malloc(2*block_size*num_blocks*sizeof(uint64_t));
+    gpuErrchk( hipMemcpy(clk, clk_g, 2*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
 
     if (err != hipSuccess) {
         fprintf(stderr, "ERROR: hipMemcpy() failed (%s)\n", hipGetErrorString(err));
@@ -257,8 +266,8 @@ int main(int argc, char **argv)
     uint64_t cumulative_time_1 = 0;
     uint64_t cumulative_time_2 = 0;
     for(int idx = 0; idx < (num_blocks*block_size); idx++) {
-        cumulative_time_1 += (stopClk[idx] - startClk[idx]);
-        cumulative_time_2 += (stopClk[idx+(num_blocks*block_size)] - startClk[idx+(num_blocks*block_size)]);
+        cumulative_time_1 += (clk[idx]);
+        cumulative_time_2 += (clk[idx+(num_blocks*block_size)]);
     }
     printf("Average Runtime of 1st Kernel = %12.4f cycles\n", (float)(cumulative_time_1)/(block_size*num_blocks));
     printf("Average Runtime of 2nd Kernel = %12.4f cycles\n", (float)(cumulative_time_2)/(block_size*num_blocks));

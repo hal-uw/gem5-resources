@@ -238,10 +238,17 @@ int main(int argc, char **argv)
     // Main computation loop
     double timer3 = gettime();
 
-    uint64_t *startClk_g;
-    uint64_t *stopClk_g;
-    gpuErrchk( hipMalloc(&startClk_g, (2*block_size*num_blocks)*sizeof(uint64_t)) );
-    gpuErrchk( hipMalloc(&stopClk_g, (2*block_size*num_blocks)*sizeof(uint64_t)) );
+    uint64_t *clk_g;
+    gpuErrchk( hipMalloc(&clk_g, (2*block_size*num_blocks)*sizeof(uint64_t)) );
+    gpuErrchk(hipMemset(clk_g, 0, (2*block_size*num_blocks)*sizeof(uint64_t)) );
+
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+//    m5_work_begin(0, 0);
+#elif GEM5_FS
+    m5_dump_reset_stats_addr(0, 0);
+//    m5_work_begin_addr(0, 0);
+#endif
     while (stop) {
 
         stop = 0;
@@ -256,12 +263,12 @@ int main(int argc, char **argv)
         hipLaunchKernelGGL(color1, dim3(grid), dim3(threads ), 0, 0, row_d, col_d, node_value_d, color_d,
                                      stop_d, max_d, min_d, graph_color,
                                      num_nodes, num_edges,
-                                     startClk_g, stopClk_g);
+                                     clk_g);
 
         // Launch the color kernel 2
         hipLaunchKernelGGL(color2, dim3(grid), dim3(threads ), 0, 0, node_value_d, color_d, max_d, min_d,
                                      graph_color, num_nodes, num_edges,
-                                     startClk_g+(block_size*num_blocks), stopClk_g+(block_size*num_blocks));
+                                     clk_g+(block_size*num_blocks));
 
         err = hipMemcpy(&stop, stop_d, sizeof(int), hipMemcpyDeviceToHost);
         if (err != hipSuccess) {
@@ -273,7 +280,13 @@ int main(int argc, char **argv)
 
     }
     hipDeviceSynchronize();
-
+#ifdef GEM5_FUSION
+    m5_dump_reset_stats(0, 0);
+//    m5_work_begin(0, 0);
+#elif GEM5_FS
+    m5_dump_reset_stats_addr(0, 0);
+//    m5_work_begin_addr(0, 0);
+#endif
     double timer4 = gettime();
 
     // Copy back the color array
@@ -283,10 +296,8 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    uint64_t *startClk = (uint64_t*) malloc(2*block_size*num_blocks*sizeof(uint64_t));
-    uint64_t *stopClk = (uint64_t*) malloc(2*block_size*num_blocks*sizeof(uint64_t));
-    gpuErrchk( hipMemcpy(startClk, startClk_g, 2*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
-    gpuErrchk( hipMemcpy(stopClk, stopClk_g, 2*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
+    uint64_t *clk = (uint64_t*) malloc(2*block_size*num_blocks*sizeof(uint64_t));
+    gpuErrchk( hipMemcpy(clk, clk_g, 2*block_size*num_blocks*sizeof(uint64_t), hipMemcpyDeviceToHost) );
 
 #ifdef GEM5_FUSION
     m5_work_end(0, 0);
@@ -302,8 +313,8 @@ int main(int argc, char **argv)
     uint64_t cumulative_time_1 = 0;
     uint64_t cumulative_time_2 = 0;
     for(int idx = 0; idx < (num_blocks*block_size); idx++) {
-        cumulative_time_1 += (stopClk[idx] - startClk[idx]);
-        cumulative_time_2 += (stopClk[idx+(num_blocks*block_size)] - startClk[idx+(num_blocks*block_size)]);
+        cumulative_time_1 += (clk[idx]);
+        cumulative_time_2 += (clk[idx+(num_blocks*block_size)]);
     }
     printf("Average Runtime of 1st Kernel = %12.4f cycles\n", (float)(cumulative_time_1)/(block_size*num_blocks));
     printf("Average Runtime of 2nd Kernel = %12.4f cycles\n", (float)(cumulative_time_2)/(block_size*num_blocks));

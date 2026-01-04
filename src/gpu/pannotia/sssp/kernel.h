@@ -73,7 +73,7 @@
  */
 __global__ void
 spmv_min_dot_plus_kernel(const int num_rows, int *row, int *col, int *data,
-                         int *x, int *y, uint64_t *startClk, uint64_t *stopClk)
+                         int *x, int *y, uint64_t *clk)
 {
     // start timing
     uint64_t start = 0;
@@ -102,8 +102,7 @@ spmv_min_dot_plus_kernel(const int num_rows, int *row, int *col, int *data,
     stopCycle = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
+    clk[tid] += stopCycle-start;
 }
 
 /**
@@ -117,7 +116,7 @@ spmv_min_dot_plus_kernel(const int num_rows, int *row, int *col, int *data,
  */
 __global__ void
 ell_min_dot_plus_kernel(const int num_nodes, const int height, int *col,
-                        int *data, int *x, int *y, uint64_t *startClk, uint64_t *stopClk)
+                        int *data, int *x, int *y, uint64_t *clk)
 {
     // start timing
     uint64_t start = 0;
@@ -148,8 +147,7 @@ ell_min_dot_plus_kernel(const int num_nodes, const int height, int *col,
     stopCycle = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
+    clk[tid] += stopCycle-start;
 }
 
 /**
@@ -184,7 +182,7 @@ vector_init(int *vector1, int *vector2, const int i, const int num_nodes)
  * @param   num_nodes    number of vertices
  */
 __global__ void
-vector_assign(int *vector1, int *vector2, const int num_nodes, uint64_t *startClk, uint64_t *stopClk)
+vector_assign(int *vector1, int *vector2, const int num_nodes, uint64_t *clk)
 {
     // start timing
     uint64_t start = 0;
@@ -201,8 +199,7 @@ vector_assign(int *vector1, int *vector2, const int num_nodes, uint64_t *startCl
     stopCycle = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
+    clk[tid] += stopCycle-start;
 }
 
 /**
@@ -213,7 +210,7 @@ vector_assign(int *vector1, int *vector2, const int num_nodes, uint64_t *startCl
  * @param   num_nodes    number of vertices
  */
 __global__ void
-vector_diff(int *vector1, int *vector2, int *stop, const int num_nodes, uint64_t *startClk, uint64_t *stopClk)
+vector_diff(int *vector1, int *vector2, int *stop, const int num_nodes, uint64_t *clk)
 {
     // start timing
     uint64_t start = 0;
@@ -233,8 +230,7 @@ vector_diff(int *vector1, int *vector2, int *stop, const int num_nodes, uint64_t
     stopCycle = __builtin_readcyclecounter();
     asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
     // write time back to memory
-    startClk[tid] = start;
-    stopClk[tid] = stopCycle;
+    clk[tid] += stopCycle - start;
 }
 
 #endif // KERNEL_H
