@@ -37,14 +37,25 @@ THE SOFTWARE.
  */
 template <typename T>
 __global__ void
-vector_square(T *C_d, const T *A_d, size_t N)
+vector_square(T *C_d, const T *A_d, size_t N, uint64_t *clk)
 {
+    // start timing
+    uint64_t start = 0;
+    start = __builtin_readcyclecounter();
+    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
+    // Get my workitem id x_dim
+
     size_t offset = (hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x);
     size_t stride = hipBlockDim_x * hipGridDim_x ;
 
     for (size_t i=offset; i<N; i+=stride) {
         C_d[i] = A_d[i] * A_d[i];
     }
+
+    uint64_t stop = 0;
+    stop = __builtin_readcyclecounter();
+    asm volatile("s_waitcnt vmcnt(0) & lgkmcnt(0)\n\t"); /* per ISA manual, need waitcnt after S_MEMTIME */
+    clk[offset] = stop - start;
 }
 
 
@@ -72,9 +83,22 @@ int main(int argc, char *argv[])
     const unsigned blocks = 512;
     const unsigned threadsPerBlock = 256;
 
+    uint64_t *clk_g;
+    hipMalloc(&clk_g, sizeof(uint64_t)*blocks*threadsPerBlock);
+
     printf ("info: launch 'vector_square' kernel\n");
-    hipLaunchKernelGGL(vector_square, dim3(blocks), dim3(threadsPerBlock), 0, 0, C_h, A_h, N);
+    hipLaunchKernelGGL(vector_square, dim3(blocks), dim3(threadsPerBlock), 0, 0, C_h, A_h, N, clk_g);
     hipDeviceSynchronize();
+
+    uint64_t *clk = (uint64_t*) malloc(sizeof(uint64_t)*blocks*threadsPerBlock);
+    hipMemcpy(clk, clk_g, sizeof(uint64_t)*blocks*threadsPerBlock, hipMemcpyDeviceToHost) ;
+
+    uint64_t cumulative_time = 0;
+    for(int idx = 0; idx < blocks*threadsPerBlock; idx++) {
+        cumulative_time += clk[idx];
+    }
+    printf("Average Runtime  = %12.4f cycles\n", (float)(cumulative_time)/(blocks*threadsPerBlock));
+
 
     printf ("info: check result\n");
     for (size_t i=0; i<N; i++)  {

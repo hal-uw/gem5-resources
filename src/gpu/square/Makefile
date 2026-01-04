@@ -1,17 +1,17 @@
-HIP_PATH?= /opt/rocm/hip
-HIPCC=$(HIP_PATH)/bin/hipcc
-
-BIN_DIR?= ./bin
-
-square: $(BIN_DIR)/square
-
-$(BIN_DIR)/square: square.cpp $(BIN_DIR)
-	$(HIPCC) --amdgpu-target=gfx900,gfx902 $(CXXFLAGS) square.cpp -o $(BIN_DIR)/square
-
-$(BIN_DIR):
-	mkdir -p $(BIN_DIR)
+default:
+	make -f Makefile.default
 
 clean:
-	rm -rf $(BIN_DIR)
+	make -f Makefile.default clean
 
-.PHONY: square clean
+gem5-fusion:
+	make -f Makefile.gem5-fusion
+
+clean-gem5-fusion:
+	make -f Makefile.gem5-fusion clean
+
+gpufs:
+	make -f Makefile.gpufs
+
+clean-gpufs:
+	make -f Makefile.gpufs clean
