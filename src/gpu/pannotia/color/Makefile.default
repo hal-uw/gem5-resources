@@ -5,7 +5,7 @@ MAX_EXE = color_max.default
 MAXMIN_EXE = color_maxmin.default
 
 MAX_CPP = coloring_max_test.cpp
-MAXMIN_CPP = coloring_maxmin.cpp
+MAXMIN_CPP = coloring_maxmin_timers.cpp
 
 OPTS = -O3 -Wno-unused-result
 BIN_DIR ?= ./bin.default
