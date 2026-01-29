@@ -1,5 +1,5 @@
 HIP_PATH ?= /opt/rocm/hip
-HIPCC = $(HIP_PATH)/bin/hipcc
+HIPCC = $(HIP_PATH)/bin/hipcc --gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13
 OPTS = -O3
 
 # these are needed for m5ops

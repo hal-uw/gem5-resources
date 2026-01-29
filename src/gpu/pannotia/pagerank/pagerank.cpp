@@ -64,6 +64,7 @@
 #include "../graph_parser/parse.h"
 #include "../graph_parser/util.h"
 #include "kernel.h"
+#include "TimerHelpers.h"
 
 #if defined(GEM5_FUSION) || defined(GEM5_FS)
 #include <stdint.h>
@@ -74,6 +75,8 @@
 #include <util/m5/src/m5_mmap.h>
 #endif
 
+TimingEvent kernel1;
+
 // Iteration count
 #define ITER 20
 
@@ -82,6 +85,8 @@ void print_vectorf(float *vector, int num);
 int main(int argc, char **argv)
 {
     char *tmpchar;
+    //Timer stuff
+    std::string timer_out_name;
 
     int num_nodes;
     int num_edges;
@@ -89,15 +94,21 @@ int main(int argc, char **argv)
     bool directed = 0;
 
     hipError_t err = hipSuccess;
-
-    if (argc == 3) {
+    
+    if (argc == 4) {
         tmpchar = argv[1]; // Graph inputfile
         file_format = atoi(argv[2]); // File format
+        timer_out_name = argv[3]; // Timer output file name
+    } else if (argc == 3) {
+        tmpchar = argv[1]; // Graph inputfile
+        file_format = atoi(argv[2]); // File format
+        timer_out_name = "PageRank_Timing"; // Default timer output file name
     } else {
         fprintf(stderr, "You did something wrong!\n");
         exit(1);
     }
-
+    
+    kernel1.name = timer_out_name;
     // Allocate the csr structure
     csr_array *csr;
 
@@ -193,10 +204,13 @@ int main(int argc, char **argv)
 
 //    double timer3 = gettime();
 
+    start_timer(&kernel1, true);
     // Launch the initialization kernel
     hipLaunchKernelGGL(HIP_KERNEL_NAME(inibuffer), dim3(grid), dim3(threads), 0, 0, row_d, pagerank1_d, pagerank2_d, num_nodes,
                                   num_edges);
     hipDeviceSynchronize();
+    stop_timer(&kernel1, "Kernel Initilization");
+
     err = hipGetLastError();
     if (err != hipSuccess) {
         fprintf(stderr, "ERROR: cudaLaunch failed (%s)\n", hipGetErrorString(err));
@@ -205,15 +219,19 @@ int main(int argc, char **argv)
 
     // Run PageRank for some iter. TO: convergence determination
     for (int i = 0; i < ITER; i++) {
+        start_timer(&kernel1, true);
         // Launch pagerank kernel 1
         hipLaunchKernelGGL(HIP_KERNEL_NAME(pagerank1), dim3(grid), dim3(threads), 0, 0, row_d, col_d, data_d, pagerank1_d,
                                       pagerank2_d, num_nodes, num_edges);
         hipDeviceSynchronize();
+        stop_timer(&kernel1, "Kernel Pagerank1 Iteration "+ std::to_string(i));
 
+        start_timer(&kernel1, false);
         // Launch pagerank kernel 2
         hipLaunchKernelGGL(HIP_KERNEL_NAME(pagerank2), dim3(grid), dim3(threads), 0, 0, row_d, col_d, data_d, pagerank1_d,
                                       pagerank2_d, num_nodes, num_edges);
         hipDeviceSynchronize();
+        stop_timer(&kernel1, "Kernel Pagerank2 Iteration "+ std::to_string(i));
     }
 
 //    double timer4 = gettime();
