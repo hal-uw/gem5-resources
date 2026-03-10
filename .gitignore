@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 m5out/
 packer
+*/bin*/*
 
 # For jekyll
 _site

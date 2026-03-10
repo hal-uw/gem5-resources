@@ -1,0 +1,22 @@
+Opening file: pannotia/dataset/color/G3_circuit.graph
+This is an undirected graph
+Read from file: num_nodes = 1585478, num_edges = 6075348
+Kernel 1 Time: 0.365118 ms
+Kernel 2 TIme: 0.066880 ms
+Kernel 1 Time: 0.271680 ms
+Kernel 2 TIme: 0.066079 ms
+Kernel 1 Time: 0.178400 ms
+Kernel 2 TIme: 0.061760 ms
+Kernel 1 Time: 0.096000 ms
+Kernel 2 TIme: 0.048480 ms
+Kernel 1 Time: 0.051040 ms
+Kernel 2 TIme: 0.038880 ms
+Kernel 1 Time: 0.045920 ms
+Kernel 2 TIme: 0.037920 ms
+Kernel 1 Time: 0.039040 ms
+Kernel 2 TIme: 0.037120 ms
+Kernel 1 Time: 0.036800 ms
+Kernel 2 TIme: 0.036960 ms
+total number of colors used: 17
+kernel time = 3.582954 ms
+kernel + memcpy time = 239.219904 ms

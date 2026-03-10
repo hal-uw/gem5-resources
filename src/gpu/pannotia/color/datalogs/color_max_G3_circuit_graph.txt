@@ -1,0 +1,100 @@
+Opening file: pannotia/dataset/color/G3_circuit.graph
+This is an undirected graph
+Read from file: num_nodes = 1585478, num_edges = 6075348
+Kernel 1 Time: 0.797277 ms
+Kernel 2 TIme: 0.091520 ms
+Kernel 1 Time: 0.326079 ms
+Kernel 2 TIme: 0.056320 ms
+Kernel 1 Time: 0.261280 ms
+Kernel 2 TIme: 0.056640 ms
+Kernel 1 Time: 0.261439 ms
+Kernel 2 TIme: 0.055200 ms
+Kernel 1 Time: 0.222720 ms
+Kernel 2 TIme: 0.099039 ms
+Kernel 1 Time: 0.175840 ms
+Kernel 2 TIme: 0.049920 ms
+Kernel 1 Time: 0.098560 ms
+Kernel 2 TIme: 0.044320 ms
+Kernel 1 Time: 0.073760 ms
+Kernel 2 TIme: 0.038720 ms
+Kernel 1 Time: 0.053600 ms
+Kernel 2 TIme: 0.040480 ms
+Kernel 1 Time: 0.042400 ms
+Kernel 2 TIme: 0.039680 ms
+Kernel 1 Time: 0.041280 ms
+Kernel 2 TIme: 0.038720 ms
+Kernel 1 Time: 0.040160 ms
+Kernel 2 TIme: 0.038720 ms
+Kernel 1 Time: 0.039360 ms
+Kernel 2 TIme: 0.039040 ms
+Kernel 1 Time: 0.037760 ms
+Kernel 2 TIme: 0.038240 ms
+Kernel 1 Time: 0.037120 ms
+Kernel 2 TIme: 0.038560 ms
+total number of colors used: 16
+Opening file: pannotia/dataset/color/ecology1.graph
+This is an undirected graph
+Read from file: num_nodes = 1000000, num_edges = 3996000
+Kernel 1 Time: 0.663678 ms
+Kernel 2 TIme: 0.045439 ms
+Kernel 1 Time: 0.178240 ms
+Kernel 2 TIme: 0.044800 ms
+Kernel 1 Time: 0.168160 ms
+Kernel 2 TIme: 0.044640 ms
+Kernel 1 Time: 0.152800 ms
+Kernel 2 TIme: 0.044800 ms
+Kernel 1 Time: 0.131040 ms
+Kernel 2 TIme: 0.044160 ms
+Kernel 1 Time: 0.107519 ms
+Kernel 2 TIme: 0.043200 ms
+Kernel 1 Time: 0.074560 ms
+Kernel 2 TIme: 0.038720 ms
+Kernel 1 Time: 0.058720 ms
+Kernel 2 TIme: 0.035520 ms
+Kernel 1 Time: 0.045119 ms
+Kernel 2 TIme: 0.036320 ms
+Kernel 1 Time: 0.038560 ms
+Kernel 2 TIme: 0.035040 ms
+Kernel 1 Time: 0.037760 ms
+Kernel 2 TIme: 0.035040 ms
+Kernel 1 Time: 0.036320 ms
+Kernel 2 TIme: 0.035040 ms
+Kernel 1 Time: 0.035360 ms
+Kernel 2 TIme: 0.034880 ms
+Kernel 1 Time: 0.033120 ms
+Kernel 2 TIme: 0.034720 ms
+total number of colors used: 15
+Opening file: pannotia/dataset/color/G3_circuit.graph
+This is an undirected graph
+Read from file: num_nodes = 1585478, num_edges = 6075348
+Kernel 1 Time: 0.803038 ms
+Kernel 2 TIme: 0.055360 ms
+Kernel 1 Time: 0.325280 ms
+Kernel 2 TIme: 0.055360 ms
+Kernel 1 Time: 0.296480 ms
+Kernel 2 TIme: 0.055999 ms
+Kernel 1 Time: 0.225440 ms
+Kernel 2 TIme: 0.055360 ms
+Kernel 1 Time: 0.183520 ms
+Kernel 2 TIme: 0.053280 ms
+Kernel 1 Time: 0.137279 ms
+Kernel 2 TIme: 0.049760 ms
+Kernel 1 Time: 0.137440 ms
+Kernel 2 TIme: 0.044160 ms
+Kernel 1 Time: 0.074080 ms
+Kernel 2 TIme: 0.038720 ms
+Kernel 1 Time: 0.053120 ms
+Kernel 2 TIme: 0.039359 ms
+Kernel 1 Time: 0.042080 ms
+Kernel 2 TIme: 0.039680 ms
+Kernel 1 Time: 0.040960 ms
+Kernel 2 TIme: 0.039360 ms
+Kernel 1 Time: 0.039520 ms
+Kernel 2 TIme: 0.038560 ms
+Kernel 1 Time: 0.039040 ms
+Kernel 2 TIme: 0.038400 ms
+Kernel 1 Time: 0.037760 ms
+Kernel 2 TIme: 0.038239 ms
+Kernel 1 Time: 0.036960 ms
+Kernel 2 TIme: 0.038560 ms
+total number of colors used: 16

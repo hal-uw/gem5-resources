@@ -1,0 +1,66 @@
+Opening file: pannotia/dataset/color/ecology1.graph
+This is an undirected graph
+Read from file: num_nodes = 1000000, num_edges = 3996000
+Kernel 1 Time: 0.196958 ms
+Kernel 2 TIme: 0.053600 ms
+Kernel 1 Time: 0.174080 ms
+Kernel 2 TIme: 0.051840 ms
+Kernel 1 Time: 0.133600 ms
+Kernel 2 TIme: 0.050880 ms
+Kernel 1 Time: 0.075520 ms
+Kernel 2 TIme: 0.042880 ms
+Kernel 1 Time: 0.044160 ms
+Kernel 2 TIme: 0.034880 ms
+Kernel 1 Time: 0.036960 ms
+Kernel 2 TIme: 0.034400 ms
+Kernel 1 Time: 0.034880 ms
+Kernel 2 TIme: 0.033760 ms
+Kernel 1 Time: 0.032960 ms
+Kernel 2 TIme: 0.033280 ms
+total number of colors used: 17
+kernel time = 3.196955 ms
+kernel + memcpy time = 231.058121 ms
+Opening file: pannotia/dataset/color/G3_circuit.graph
+This is an undirected graph
+Read from file: num_nodes = 1585478, num_edges = 6075348
+Kernel 1 Time: 0.328318 ms
+Kernel 2 TIme: 0.066400 ms
+Kernel 1 Time: 0.299360 ms
+Kernel 2 TIme: 0.066240 ms
+Kernel 1 Time: 0.179039 ms
+Kernel 2 TIme: 0.062080 ms
+Kernel 1 Time: 0.095840 ms
+Kernel 2 TIme: 0.048320 ms
+Kernel 1 Time: 0.051200 ms
+Kernel 2 TIme: 0.039040 ms
+Kernel 1 Time: 0.040960 ms
+Kernel 2 TIme: 0.038400 ms
+Kernel 1 Time: 0.039040 ms
+Kernel 2 TIme: 0.037600 ms
+Kernel 1 Time: 0.036640 ms
+Kernel 2 TIme: 0.036960 ms
+total number of colors used: 17
+kernel time = 3.679037 ms
+kernel + memcpy time = 240.375042 ms
+Opening file: pannotia/dataset/color/ecology1.graph
+This is an undirected graph
+Read from file: num_nodes = 1000000, num_edges = 3996000
+Kernel 1 Time: 0.193598 ms
+Kernel 2 TIme: 0.048640 ms
+Kernel 1 Time: 0.171040 ms
+Kernel 2 TIme: 0.048000 ms
+Kernel 1 Time: 0.128160 ms
+Kernel 2 TIme: 0.047199 ms
+Kernel 1 Time: 0.070720 ms
+Kernel 2 TIme: 0.038560 ms
+Kernel 1 Time: 0.040640 ms
+Kernel 2 TIme: 0.031360 ms
+Kernel 1 Time: 0.033440 ms
+Kernel 2 TIme: 0.030720 ms
+Kernel 1 Time: 0.031680 ms
+Kernel 2 TIme: 0.030240 ms
+Kernel 1 Time: 0.029440 ms
+Kernel 2 TIme: 0.029600 ms
+total number of colors used: 17
+kernel time = 2.974033 ms
+kernel + memcpy time = 241.147041 ms

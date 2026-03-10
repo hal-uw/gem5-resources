@@ -1,0 +1,39 @@
+Opening file: ../panData/pannotia/dataset/color/G3_circuit.graph
+This is an undirected graph
+Read from file: num_nodes = 1585478, num_edges = 6075348
+Timing Data File is being created.
+Directory Already exists, skipping.
+Kernel 1 Time: 0.328157 ms
+Timing File already created for this event.
+Kernel 2 TIme: 0.067360 ms
+Timing File already created for this event.
+Kernel 1 Time: 0.302559 ms
+Timing File already created for this event.
+Kernel 2 TIme: 0.066560 ms
+Timing File already created for this event.
+Kernel 1 Time: 0.178720 ms
+Timing File already created for this event.
+Kernel 2 TIme: 0.062879 ms
+Timing File already created for this event.
+Kernel 1 Time: 0.135999 ms
+Timing File already created for this event.
+Kernel 2 TIme: 0.049120 ms
+Timing File already created for this event.
+Kernel 1 Time: 0.051519 ms
+Timing File already created for this event.
+Kernel 2 TIme: 0.039040 ms
+Timing File already created for this event.
+Kernel 1 Time: 0.040640 ms
+Timing File already created for this event.
+Kernel 2 TIme: 0.038080 ms
+Timing File already created for this event.
+Kernel 1 Time: 0.038400 ms
+Timing File already created for this event.
+Kernel 2 TIme: 0.037119 ms
+Timing File already created for this event.
+Kernel 1 Time: 0.036800 ms
+Timing File already created for this event.
+Kernel 2 TIme: 0.036960 ms
+total number of colors used: 17
+kernel time = 3.783226 ms
+kernel + memcpy time = 248.821020 ms
