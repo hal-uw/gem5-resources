@@ -219,7 +219,7 @@ int main(int argc, char **argv)
 
     // Run PageRank for some iter. TO: convergence determination
     for (int i = 0; i < ITER; i++) {
-        start_timer(&kernel1, true);
+        start_timer(&kernel1, i == 0);
         // Launch pagerank kernel 1
         hipLaunchKernelGGL(HIP_KERNEL_NAME(pagerank1), dim3(grid), dim3(threads), 0, 0, row_d, col_d, data_d, pagerank1_d,
                                       pagerank2_d, num_nodes, num_edges);

@@ -1,10 +1,10 @@
 HIP_PATH ?= /opt/rocm/hip
-HIPCC = $(HIP_PATH)/bin/hipcc --gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13
+HIPCC = $(HIP_PATH)/bin/hipcc
 OPTS = -O3
 
 # these are needed for m5ops
 # Assumes gem5 and gem5-resources share a common parent directory.
-GEM5_ROOT ?= ../../../../../gem5
+GEM5_ROOT ?= ../../../../../../gap-gem5
 CFLAGS += -I$(GEM5_ROOT)/include -I/../graph_parser
 LDFLAGS += -L$(GEM5_ROOT)/util/m5/build/x86/out -lm5
 
@@ -18,7 +18,7 @@ else ifeq ($(VARIANT),SPMV)
     CPPFILES += pagerank_spmv.cpp
 endif
 
-BIN_DIR ?= ./bin
+BIN_DIR ?= ./bin.gem5-fusion
 
 all: $(BIN_DIR)/$(EXECUTABLE)
 

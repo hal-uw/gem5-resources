@@ -11,8 +11,8 @@ BIN_DIR ?= ./bin
 
 all: $(BIN_DIR)/fw_hip.gem5
 
-$(BIN_DIR)/fw_hip.gem5: Floyd-Warshall.cpp parse.cpp ../graph_parser/util.cpp $(BIN_DIR)
-	$(HIPCC) -O3 --amdgpu-target=gfx900,gfx902 $(CXXFLAGS) parse.cpp ../graph_parser/util.cpp Floyd-Warshall.cpp -DGEM5_FUSION -o $(BIN_DIR)/fw_hip.gem5 $(CFLAGS) $(LDFLAGS)
+$(BIN_DIR)/fw_hip.gem5: Floyd-Warshall-Timers-2.cpp parse.cpp ../graph_parser/util.cpp $(BIN_DIR)
+	$(HIPCC) -O3 --amdgpu-target=gfx900,gfx902 $(CXXFLAGS) parse.cpp ../graph_parser/util.cpp Floyd-Warshall-Timers-2.cpp -DGEM5_FUSION -o $(BIN_DIR)/fw_hip.gem5 $(CFLAGS) $(LDFLAGS)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

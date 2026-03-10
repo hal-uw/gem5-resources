@@ -2,7 +2,7 @@ HIP_PATH ?= /opt/rocm
 HIPCC = $(HIP_PATH)/bin/hipcc
 
 EXECUTABLE = fw_hip.gpufs
-CPPSRC = Floyd-Warshall.cpp
+CPPSRC = Floyd-Warshall-Timers-2.cpp
 
 # Assumes gem5 and gem5-resources share a common parent directory.
 GEM5_ROOT ?= ../../../../../gem5

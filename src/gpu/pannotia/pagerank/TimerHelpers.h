@@ -16,6 +16,8 @@
 
 #ifndef GEM5_FUSION
 #include <filesystem>
+#else
+#include <gem5/m5ops.h>
 #endif
 
 struct TimingEvent{
@@ -81,8 +83,9 @@ void start_timer(TimingEvent* event, bool dumpStats){
     #ifndef GEM5_FUSION
         _start_timer(event);
     #else
+        _start_timer(event);
         if (dumpStats) {
-            m5_dumpreset_stats(0, 0);
+            m5_dump_reset_stats(0, 0);
         }
     #endif
 }
@@ -100,7 +103,9 @@ void stop_timer(TimingEvent* event, const std::string& kernelName){
         _end_timer(event, kernelName);
         clear_timer(event);
     #else
-        m5_dumpreset_stats(0, 0);
+	_end_timer(event, kernelName);
+        clear_timer(event);
+        m5_dump_reset_stats(0, 0);
     #endif
 }
 
