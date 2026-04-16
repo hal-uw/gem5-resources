@@ -18,7 +18,7 @@ else ifeq ($(VARIANT),SPMV)
     CPPFILES += pagerank_spmv.cpp
 endif
 
-BIN_DIR ?= ./bin.gem5-fusion
+BIN_DIR ?= ./bin.gem5-fusion-2
 
 all: $(BIN_DIR)/$(EXECUTABLE)
 

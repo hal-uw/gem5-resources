@@ -85,7 +85,7 @@ void start_timer(TimingEvent* event, bool dumpStats){
     #else
         _start_timer(event);
         if (dumpStats) {
-            m5_dump_reset_stats(0, 0);
+	     m5_dump_reset_stats_addr(0, 0);
         }
     #endif
 }
@@ -105,7 +105,7 @@ void stop_timer(TimingEvent* event, const std::string& kernelName){
     #else
 	_end_timer(event, kernelName);
         clear_timer(event);
-        m5_dump_reset_stats(0, 0);
+        m5_dump_reset_stats_addr(0, 0);
     #endif
 }
 
