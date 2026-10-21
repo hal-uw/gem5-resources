@@ -63,6 +63,7 @@ Additional BSD Notice
 */
 
 #include "hip/hip_runtime.h"
+#include "kernel_timer.h"
 #include <vector>
 #include <math.h>
 #include <stdio.h>
@@ -841,7 +842,7 @@ void Release(T **ptr)
 template<typename T>
 void freshenGPU(std::vector<T>&cpu,T **gpu,int& stale) {
   if (stale!=GPU_STALE) return;
-  if (!(*gpu)) {HIP( hipHostMalloc(gpu,sizeof(T)*cpu.size()) );}
+  if (!(*gpu)) {HIP( hipMalloc(gpu,sizeof(T)*cpu.size()) );}
   HIP( hipMemcpy(*gpu,&cpu[0],sizeof(T)*cpu.size(),hipMemcpyHostToDevice) );
   stale=ALL_FRESH;
 }
@@ -1129,13 +1130,20 @@ void TimeIncrement()
   ++mesh.cycle() ;
 }
 
-__global__
-void InitStressTermsForElems_kernel(
+static __device__ void InitStressTermsForElems_kernel_body(
                                    int numElem,Real_t *sigxx, Real_t *sigyy, Real_t *sigzz, Real_t *p, Real_t *q)
 {
   int i = hipBlockDim_x*hipBlockIdx_x + hipThreadIdx_x;
   if (i<numElem)
         sigxx[i] = sigyy[i] = sigzz[i] =  - p[i] - q[i] ;
+}
+
+// InitStressTermsForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void InitStressTermsForElems_kernel(unsigned long long *kt, int numElem,Real_t *sigxx, Real_t *sigyy, Real_t *sigzz, Real_t *p, Real_t *q)
+{
+    KT_BEGIN();
+    InitStressTermsForElems_kernel_body(numElem, sigxx, sigyy, sigzz, p, q);
+    KT_END(kt);
 }
 
 static inline
@@ -1145,7 +1153,7 @@ void InitStressTermsForElems_gpu(Index_t numElem,
   dim3 dimBlock(BLOCKSIZE,1,1);
   dim3 dimGrid(PAD_DIV(numElem,dimBlock.x),1,1);
   //hipFuncSetCacheConfig(InitStressTermsForElems_kernel,hipFuncCachePreferL1); // set as default for all kernels after this one
-  hipLaunchKernelGGL((InitStressTermsForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, numElem,sigxx,sigyy,sigzz,meshGPU.m_p,meshGPU.m_q);
+  hipLaunchKernelGGL((InitStressTermsForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("InitStressTermsForElems_kernel"), numElem,sigxx,sigyy,sigzz,meshGPU.m_p,meshGPU.m_q);
   HIP_DEBUGSYNC;
 }
 
@@ -1415,8 +1423,7 @@ void SumElemStressesToNodeForces( const Real_t B[][8],
   fz[7*stride] = -( stress_zz * pfz7 );
 }
 
-__global__
-void IntegrateStressForElems_kernel( Index_t numElem, Index_t *nodelist,
+static __device__ void IntegrateStressForElems_kernel_body( Index_t numElem, Index_t *nodelist,
                                      Real_t *x, Real_t *y, Real_t *z,
                                      Real_t *fx_elem, Real_t *fy_elem, Real_t *fz_elem,
                                      Real_t *sigxx, Real_t *sigyy, Real_t *sigzz,
@@ -1450,8 +1457,15 @@ void IntegrateStressForElems_kernel( Index_t numElem, Index_t *nodelist,
   }
 }
 
-__global__
-void AddNodeForcesFromElems_kernel( Index_t numNode,
+// IntegrateStressForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void IntegrateStressForElems_kernel(unsigned long long *kt, Index_t numElem, Index_t *nodelist, Real_t *x, Real_t *y, Real_t *z, Real_t *fx_elem, Real_t *fy_elem, Real_t *fz_elem, Real_t *sigxx, Real_t *sigyy, Real_t *sigzz, Real_t *determ)
+{
+    KT_BEGIN();
+    IntegrateStressForElems_kernel_body(numElem, nodelist, x, y, z, fx_elem, fy_elem, fz_elem, sigxx, sigyy, sigzz, determ);
+    KT_END(kt);
+}
+
+static __device__ void AddNodeForcesFromElems_kernel_body( Index_t numNode,
                                     Int_t *nodeElemCount, Index_t *nodeElemCornerList,
                                     Real_t *fx_elem, Real_t *fy_elem, Real_t *fz_elem,
                                     Real_t *fx_node, Real_t *fy_node, Real_t *fz_node)
@@ -1469,8 +1483,15 @@ void AddNodeForcesFromElems_kernel( Index_t numNode,
   }
 }
 
-__global__
-void AddNodeForcesFromElems2_kernel( Index_t numNode,
+// AddNodeForcesFromElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void AddNodeForcesFromElems_kernel(unsigned long long *kt, Index_t numNode, Int_t *nodeElemCount, Index_t *nodeElemCornerList, Real_t *fx_elem, Real_t *fy_elem, Real_t *fz_elem, Real_t *fx_node, Real_t *fy_node, Real_t *fz_node)
+{
+    KT_BEGIN();
+    AddNodeForcesFromElems_kernel_body(numNode, nodeElemCount, nodeElemCornerList, fx_elem, fy_elem, fz_elem, fx_node, fy_node, fz_node);
+    KT_END(kt);
+}
+
+static __device__ void AddNodeForcesFromElems2_kernel_body( Index_t numNode,
                                      Int_t *nodeElemCount, Index_t *nodeElemCornerList,
                                      Real_t *fx_elem, Real_t *fy_elem, Real_t *fz_elem,
                                      Real_t *fx_node, Real_t *fy_node, Real_t *fz_node)
@@ -1488,6 +1509,14 @@ void AddNodeForcesFromElems2_kernel( Index_t numNode,
   }
 }
 
+// AddNodeForcesFromElems2_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void AddNodeForcesFromElems2_kernel(unsigned long long *kt, Index_t numNode, Int_t *nodeElemCount, Index_t *nodeElemCornerList, Real_t *fx_elem, Real_t *fy_elem, Real_t *fz_elem, Real_t *fx_node, Real_t *fy_node, Real_t *fz_node)
+{
+    KT_BEGIN();
+    AddNodeForcesFromElems2_kernel_body(numNode, nodeElemCount, nodeElemCornerList, fx_elem, fy_elem, fz_elem, fx_node, fy_node, fz_node);
+    KT_END(kt);
+}
+
 static inline
 void IntegrateStressForElems_gpu( Index_t numElem,
                                   Real_t *sigxx, Real_t *sigyy, Real_t *sigzz,
@@ -1495,18 +1524,18 @@ void IntegrateStressForElems_gpu( Index_t numElem,
 {
   Real_t *fx_elem,*fy_elem,*fz_elem;
 
-  HIP( hipHostMalloc(&fx_elem,numElem*8*sizeof(Real_t)) );
-  HIP( hipHostMalloc(&fy_elem,numElem*8*sizeof(Real_t)) );
-  HIP( hipHostMalloc(&fz_elem,numElem*8*sizeof(Real_t)) );
+  HIP( hipMalloc(&fx_elem,numElem*8*sizeof(Real_t)) );
+  HIP( hipMalloc(&fy_elem,numElem*8*sizeof(Real_t)) );
+  HIP( hipMalloc(&fz_elem,numElem*8*sizeof(Real_t)) );
 
   dim3 dimBlock=dim3(BLOCKSIZE,1,1);
   dim3 dimGrid=dim3(PAD_DIV(numElem,dimBlock.x),1,1);
-  hipLaunchKernelGGL((IntegrateStressForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, numElem, meshGPU.m_nodelist, meshGPU.m_x, meshGPU.m_y, meshGPU.m_z,
+  hipLaunchKernelGGL((IntegrateStressForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("IntegrateStressForElems_kernel"), numElem, meshGPU.m_nodelist, meshGPU.m_x, meshGPU.m_y, meshGPU.m_z,
          fx_elem, fy_elem, fz_elem, sigxx, sigyy, sigzz, determ);
   HIP_DEBUGSYNC;
 
   dimGrid=dim3(PAD_DIV(mesh.numNode(),dimBlock.x),1,1);
-  hipLaunchKernelGGL((AddNodeForcesFromElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, mesh.numNode(),meshGPU.m_nodeElemCount,meshGPU.m_nodeElemCornerList,
+  hipLaunchKernelGGL((AddNodeForcesFromElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("AddNodeForcesFromElems_kernel"), mesh.numNode(),meshGPU.m_nodeElemCount,meshGPU.m_nodeElemCornerList,
          fx_elem,fy_elem,fz_elem,meshGPU.m_fx,meshGPU.m_fy,meshGPU.m_fz);
   HIP_DEBUGSYNC;
 
@@ -2100,8 +2129,7 @@ void CalcElemFBHourglassForce(Real_t xd,Real_t yd,Real_t zd,
   hgfz *= coefficient;
 }
 
-__global__
-void CalcFBHourglassForceForElems_kernel(
+static __device__ void CalcFBHourglassForceForElems_kernel_body(
                                          Real_t *determ,
                                          Real_t *x8n,      Real_t *y8n,      Real_t *z8n,
                                          Real_t *dvdx,     Real_t *dvdy,     Real_t *dvdz,
@@ -2247,6 +2275,14 @@ void CalcFBHourglassForceForElems_kernel(
 #else
   fx_elem[0]=hgfx; fy_elem[0]=hgfy; fz_elem[0]=hgfz;
 #endif
+}
+
+// CalcFBHourglassForceForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcFBHourglassForceForElems_kernel(unsigned long long *kt, Real_t *determ, Real_t *x8n, Real_t *y8n, Real_t *z8n, Real_t *dvdx, Real_t *dvdy, Real_t *dvdz, Real_t hourg, Index_t numElem, Index_t *nodelist, Real_t *ss, Real_t *elemMass, Real_t *xd, Real_t *yd, Real_t *zd, Real_t *fx_elem, Real_t *fy_elem, Real_t *fz_elem)
+{
+    KT_BEGIN();
+    CalcFBHourglassForceForElems_kernel_body(determ, x8n, y8n, z8n, dvdx, dvdy, dvdz, hourg, numElem, nodelist, ss, elemMass, xd, yd, zd, fx_elem, fy_elem, fz_elem);
+    KT_END(kt);
 }
 
 
@@ -2462,13 +2498,13 @@ void CalcFBHourglassForceForElems_gpu(Real_t *determ,
   Index_t numElem = mesh.numElem();
   Real_t *fx_elem,*fy_elem,*fz_elem;
 
-  HIP( hipHostMalloc(&fx_elem,numElem*8*sizeof(Real_t)) );
-  HIP( hipHostMalloc(&fy_elem,numElem*8*sizeof(Real_t)) );
-  HIP( hipHostMalloc(&fz_elem,numElem*8*sizeof(Real_t)) );
+  HIP( hipMalloc(&fx_elem,numElem*8*sizeof(Real_t)) );
+  HIP( hipMalloc(&fy_elem,numElem*8*sizeof(Real_t)) );
+  HIP( hipMalloc(&fz_elem,numElem*8*sizeof(Real_t)) );
 
   dim3 dimBlock=dim3(256,1,1);
   dim3 dimGrid=dim3(PAD_DIV(numElem*8,dimBlock.x),1,1);
-  hipLaunchKernelGGL((CalcFBHourglassForceForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0,
+  hipLaunchKernelGGL((CalcFBHourglassForceForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcFBHourglassForceForElems_kernel"),
                      determ,x8n,y8n,z8n,dvdx,dvdy,dvdz,hourg,
                      numElem,meshGPU.m_nodelist,
                      meshGPU.m_ss,meshGPU.m_elemMass,
@@ -2477,7 +2513,7 @@ void CalcFBHourglassForceForElems_gpu(Real_t *determ,
   HIP_DEBUGSYNC;
 
   dimGrid=dim3(PAD_DIV(mesh.numNode(),dimBlock.x),1,1);
-  hipLaunchKernelGGL((AddNodeForcesFromElems2_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, mesh.numNode(),meshGPU.m_nodeElemCount,meshGPU.m_nodeElemCornerList,
+  hipLaunchKernelGGL((AddNodeForcesFromElems2_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("AddNodeForcesFromElems2_kernel"), mesh.numNode(),meshGPU.m_nodeElemCount,meshGPU.m_nodeElemCornerList,
          fx_elem,fy_elem,fz_elem,meshGPU.m_fx,meshGPU.m_fy,meshGPU.m_fz);
   HIP_DEBUGSYNC;
 
@@ -2487,8 +2523,7 @@ void CalcFBHourglassForceForElems_gpu(Real_t *determ,
 }
 
 
-__global__
-void CalcHourglassControlForElems_kernel(Int_t numElem,Index_t *nodelist,
+static __device__ void CalcHourglassControlForElems_kernel_body(Int_t numElem,Index_t *nodelist,
                                          Real_t *x,Real_t *y,Real_t *z,
                                          Real_t *determ,Real_t *volo,Real_t *v,
                                          Real_t *dvdx,Real_t *dvdy,Real_t *dvdz,
@@ -2549,6 +2584,14 @@ void CalcHourglassControlForElems_kernel(Int_t numElem,Index_t *nodelist,
 #endif
 }
 
+// CalcHourglassControlForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcHourglassControlForElems_kernel(unsigned long long *kt, Int_t numElem,Index_t *nodelist, Real_t *x,Real_t *y,Real_t *z, Real_t *determ,Real_t *volo,Real_t *v, Real_t *dvdx,Real_t *dvdy,Real_t *dvdz, Real_t *x8n,Real_t *y8n,Real_t *z8n)
+{
+    KT_BEGIN();
+    CalcHourglassControlForElems_kernel_body(numElem, nodelist, x, y, z, determ, volo, v, dvdx, dvdy, dvdz, x8n, y8n, z8n);
+    KT_END(kt);
+}
+
 
 static inline
 void CalcHourglassControlForElems_gpu(Real_t determ[], Real_t hgcoef)
@@ -2558,16 +2601,16 @@ void CalcHourglassControlForElems_gpu(Real_t determ[], Real_t hgcoef)
   Real_t *dvdx,*dvdy,*dvdz;
   Real_t *x8n,*y8n,*z8n;
 
-  HIP( hipHostMalloc(&dvdx,sizeof(Real_t)*numElem8) );
-  HIP( hipHostMalloc(&dvdy,sizeof(Real_t)*numElem8) );
-  HIP( hipHostMalloc(&dvdz,sizeof(Real_t)*numElem8) );
-  HIP( hipHostMalloc(&x8n,sizeof(Real_t)*numElem8) );
-  HIP( hipHostMalloc(&y8n,sizeof(Real_t)*numElem8) );
-  HIP( hipHostMalloc(&z8n,sizeof(Real_t)*numElem8) );
+  HIP( hipMalloc(&dvdx,sizeof(Real_t)*numElem8) );
+  HIP( hipMalloc(&dvdy,sizeof(Real_t)*numElem8) );
+  HIP( hipMalloc(&dvdz,sizeof(Real_t)*numElem8) );
+  HIP( hipMalloc(&x8n,sizeof(Real_t)*numElem8) );
+  HIP( hipMalloc(&y8n,sizeof(Real_t)*numElem8) );
+  HIP( hipMalloc(&z8n,sizeof(Real_t)*numElem8) );
 
   dim3 dimBlock=dim3(256,1,1);
   dim3 dimGrid=dim3(PAD_DIV(numElem*8,dimBlock.x),1,1);
-  hipLaunchKernelGGL((CalcHourglassControlForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, numElem, meshGPU.m_nodelist,
+  hipLaunchKernelGGL((CalcHourglassControlForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcHourglassControlForElems_kernel"), numElem, meshGPU.m_nodelist,
          meshGPU.m_x,meshGPU.m_y,meshGPU.m_z,
          determ,meshGPU.m_volo,meshGPU.m_v,
          dvdx,dvdy,dvdz,x8n,y8n,z8n);
@@ -2678,10 +2721,10 @@ void CalcVolumeForceForElems_gpu()
         Real_t *sigxx, *sigyy, *sigzz, *determ;
         int badvol;
 
-        HIP( hipHostMalloc(&sigxx,numElem*sizeof(Real_t)) );
-        HIP( hipHostMalloc(&sigyy,numElem*sizeof(Real_t)) );
-        HIP( hipHostMalloc(&sigzz,numElem*sizeof(Real_t)) );
-        HIP( hipHostMalloc(&determ,numElem*sizeof(Real_t)) );
+        HIP( hipMalloc(&sigxx,numElem*sizeof(Real_t)) );
+        HIP( hipMalloc(&sigyy,numElem*sizeof(Real_t)) );
+        HIP( hipMalloc(&sigzz,numElem*sizeof(Real_t)) );
+        HIP( hipMalloc(&determ,numElem*sizeof(Real_t)) );
 
         /* Sum contributions to total stress tensor */
         InitStressTermsForElems(numElem, sigxx, sigyy, sigzz, 0);
@@ -2781,8 +2824,7 @@ static inline void CalcForceForNodes(int useCPU)
   }
 }
 
-__global__
-void CalcAccelerationForNodes_kernel(int numNode,
+static __device__ void CalcAccelerationForNodes_kernel_body(int numNode,
                                      Real_t *xdd, Real_t *ydd, Real_t *zdd,
                                      Real_t *fx, Real_t *fy, Real_t *fz,
                                      Real_t *nodalMass)
@@ -2795,12 +2837,20 @@ void CalcAccelerationForNodes_kernel(int numNode,
   }
 }
 
+// CalcAccelerationForNodes_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcAccelerationForNodes_kernel(unsigned long long *kt, int numNode, Real_t *xdd, Real_t *ydd, Real_t *zdd, Real_t *fx, Real_t *fy, Real_t *fz, Real_t *nodalMass)
+{
+    KT_BEGIN();
+    CalcAccelerationForNodes_kernel_body(numNode, xdd, ydd, zdd, fx, fy, fz, nodalMass);
+    KT_END(kt);
+}
+
 static inline
 void CalcAccelerationForNodes_gpu()
 {
   dim3 dimBlock = dim3(BLOCKSIZE,1,1);
   dim3 dimGrid = dim3(PAD_DIV(mesh.numNode(),dimBlock.x),1,1);
-  hipLaunchKernelGGL((CalcAccelerationForNodes_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, mesh.numNode(),
+  hipLaunchKernelGGL((CalcAccelerationForNodes_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcAccelerationForNodes_kernel"), mesh.numNode(),
          meshGPU.m_xdd,meshGPU.m_ydd,meshGPU.m_zdd,
          meshGPU.m_fx,meshGPU.m_fy,meshGPU.m_fz,
          meshGPU.m_nodalMass);
@@ -2834,8 +2884,7 @@ void CalcAccelerationForNodes(int useCPU)
   }
 }
 
-__global__
-void ApplyAccelerationBoundaryConditionsForNodes_kernel(
+static __device__ void ApplyAccelerationBoundaryConditionsForNodes_kernel_body(
                                                         int numNodeBC, Real_t *xdd, Real_t *ydd, Real_t *zdd,
                                                         Index_t *symmX, Index_t *symmY, Index_t *symmZ)
 {
@@ -2847,13 +2896,21 @@ void ApplyAccelerationBoundaryConditionsForNodes_kernel(
   }
 }
 
+// ApplyAccelerationBoundaryConditionsForNodes_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void ApplyAccelerationBoundaryConditionsForNodes_kernel(unsigned long long *kt, int numNodeBC, Real_t *xdd, Real_t *ydd, Real_t *zdd, Index_t *symmX, Index_t *symmY, Index_t *symmZ)
+{
+    KT_BEGIN();
+    ApplyAccelerationBoundaryConditionsForNodes_kernel_body(numNodeBC, xdd, ydd, zdd, symmX, symmY, symmZ);
+    KT_END(kt);
+}
+
 static inline
 void ApplyAccelerationBoundaryConditionsForNodes_gpu()
 {
   Index_t numNodeBC = (mesh.sizeX()+1)*(mesh.sizeX()+1) ;
   dim3 dimBlock(BLOCKSIZE,1,1);
   dim3 dimGrid(PAD_DIV(numNodeBC,dimBlock.x),1,1);
-  hipLaunchKernelGGL((ApplyAccelerationBoundaryConditionsForNodes_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, numNodeBC,
+  hipLaunchKernelGGL((ApplyAccelerationBoundaryConditionsForNodes_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("ApplyAccelerationBoundaryConditionsForNodes_kernel"), numNodeBC,
          meshGPU.m_xdd,meshGPU.m_ydd,meshGPU.m_zdd,
          meshGPU.m_symmX,meshGPU.m_symmY,meshGPU.m_symmZ);
   HIP_DEBUGSYNC;
@@ -2889,8 +2946,7 @@ void ApplyAccelerationBoundaryConditionsForNodes(int useCPU)
 }
 
 
-__global__
-void CalcVelocityForNodes_kernel(int numNode, const Real_t dt, const Real_t u_cut,
+static __device__ void CalcVelocityForNodes_kernel_body(int numNode, const Real_t dt, const Real_t u_cut,
                                  Real_t *xd, Real_t *yd, Real_t *zd,
                                  Real_t *xdd, Real_t *ydd, Real_t *zdd)
 {
@@ -2912,12 +2968,20 @@ void CalcVelocityForNodes_kernel(int numNode, const Real_t dt, const Real_t u_cu
   }
 }
 
+// CalcVelocityForNodes_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcVelocityForNodes_kernel(unsigned long long *kt, int numNode, const Real_t dt, const Real_t u_cut, Real_t *xd, Real_t *yd, Real_t *zd, Real_t *xdd, Real_t *ydd, Real_t *zdd)
+{
+    KT_BEGIN();
+    CalcVelocityForNodes_kernel_body(numNode, dt, u_cut, xd, yd, zd, xdd, ydd, zdd);
+    KT_END(kt);
+}
+
 static inline
 void CalcVelocityForNodes_gpu(const Real_t dt, const Real_t u_cut)
 {
   dim3 dimBlock(BLOCKSIZE,1,1);
   dim3 dimGrid(PAD_DIV(mesh.numNode(),dimBlock.x),1,1);
-  hipLaunchKernelGGL((CalcVelocityForNodes_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, mesh.numNode(),dt,u_cut,
+  hipLaunchKernelGGL((CalcVelocityForNodes_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcVelocityForNodes_kernel"), mesh.numNode(),dt,u_cut,
          meshGPU.m_xd,meshGPU.m_yd,meshGPU.m_zd,
          meshGPU.m_xdd,meshGPU.m_ydd,meshGPU.m_zdd);
   HIP_DEBUGSYNC;
@@ -2961,8 +3025,7 @@ void CalcVelocityForNodes(const Real_t dt, const Real_t u_cut, int useCPU)
   }
 }
 
-__global__
-void CalcPositionForNodes_kernel(int numNode, Real_t dt,
+static __device__ void CalcPositionForNodes_kernel_body(int numNode, Real_t dt,
                                  Real_t *x, Real_t *y, Real_t *z,
                                  Real_t *xd, Real_t *yd, Real_t *zd)
 {
@@ -2974,12 +3037,20 @@ void CalcPositionForNodes_kernel(int numNode, Real_t dt,
   }
 }
 
+// CalcPositionForNodes_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcPositionForNodes_kernel(unsigned long long *kt, int numNode, Real_t dt, Real_t *x, Real_t *y, Real_t *z, Real_t *xd, Real_t *yd, Real_t *zd)
+{
+    KT_BEGIN();
+    CalcPositionForNodes_kernel_body(numNode, dt, x, y, z, xd, yd, zd);
+    KT_END(kt);
+}
+
 static inline
 void CalcPositionForNodes_gpu(const Real_t dt)
 {
   dim3 dimBlock(BLOCKSIZE,1,1);
   dim3 dimGrid(PAD_DIV(mesh.numNode(),dimBlock.x),1,1);
-  hipLaunchKernelGGL((CalcPositionForNodes_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, mesh.numNode(),dt,meshGPU.m_x,meshGPU.m_y,meshGPU.m_z,meshGPU.m_xd,meshGPU.m_yd,meshGPU.m_zd);
+  hipLaunchKernelGGL((CalcPositionForNodes_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcPositionForNodes_kernel"), mesh.numNode(),dt,meshGPU.m_x,meshGPU.m_y,meshGPU.m_z,meshGPU.m_xd,meshGPU.m_yd,meshGPU.m_zd);
   HIP_DEBUGSYNC;
 }
 
@@ -3258,8 +3329,7 @@ void CalcElemVelocityGradient( const Real_t* const xvel,
   d[3]  = Real_t( .5) * ( dzddy + dyddz );
 }
 
-__global__
-void CalcKinematicsForElems_kernel(
+static __device__ void CalcKinematicsForElems_kernel_body(
                                    Index_t numElem, Real_t dt,
                                    Index_t *nodelist,Real_t *volo,Real_t *v,
                                    Real_t *x,Real_t *y,Real_t *z,Real_t *xd,Real_t *yd,Real_t *zd,
@@ -3328,13 +3398,21 @@ void CalcKinematicsForElems_kernel(
   }
 }
 
+// CalcKinematicsForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcKinematicsForElems_kernel(unsigned long long *kt, Index_t numElem, Real_t dt, Index_t *nodelist,Real_t *volo,Real_t *v, Real_t *x,Real_t *y,Real_t *z,Real_t *xd,Real_t *yd,Real_t *zd, Real_t *vnew,Real_t *delv,Real_t *arealg,Real_t *dxx,Real_t *dyy,Real_t *dzz)
+{
+    KT_BEGIN();
+    CalcKinematicsForElems_kernel_body(numElem, dt, nodelist, volo, v, x, y, z, xd, yd, zd, vnew, delv, arealg, dxx, dyy, dzz);
+    KT_END(kt);
+}
+
 
 static inline
 void CalcKinematicsForElems_gpu( Index_t numElem, Real_t dt )
 {
   dim3 dimBlock=dim3(BLOCKSIZE,1,1);
   dim3 dimGrid=dim3(PAD_DIV(numElem,dimBlock.x),1,1);
-  hipLaunchKernelGGL((CalcKinematicsForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, numElem,dt,meshGPU.m_nodelist,meshGPU.m_volo,meshGPU.m_v,
+  hipLaunchKernelGGL((CalcKinematicsForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcKinematicsForElems_kernel"), numElem,dt,meshGPU.m_nodelist,meshGPU.m_volo,meshGPU.m_v,
          meshGPU.m_x,meshGPU.m_y,meshGPU.m_z,meshGPU.m_xd,meshGPU.m_yd,meshGPU.m_zd,
          meshGPU.m_vnew,meshGPU.m_delv,meshGPU.m_arealg,meshGPU.m_dxx,meshGPU.m_dyy,meshGPU.m_dzz);
   HIP_DEBUGSYNC;
@@ -3432,8 +3510,7 @@ void CalcKinematicsForElems( Index_t numElem, Real_t dt, int useCPU )
 }
 
 
-__global__
-void CalcLagrangeElementsPart2_kernel(
+static __device__ void CalcLagrangeElementsPart2_kernel_body(
                                       Index_t numElem,
                                       Real_t *dxx,Real_t *dyy, Real_t *dzz,
                                           Real_t *vdov
@@ -3460,6 +3537,14 @@ void CalcLagrangeElementsPart2_kernel(
   }
 }
 
+// CalcLagrangeElementsPart2_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcLagrangeElementsPart2_kernel(unsigned long long *kt, Index_t numElem, Real_t *dxx,Real_t *dyy, Real_t *dzz, Real_t *vdov)
+{
+    KT_BEGIN();
+    CalcLagrangeElementsPart2_kernel_body(numElem, dxx, dyy, dzz, vdov);
+    KT_END(kt);
+}
+
 
 static inline
 void CalcLagrangeElementsPart2_gpu()
@@ -3468,7 +3553,7 @@ void CalcLagrangeElementsPart2_gpu()
 
   dim3 dimBlock=dim3(BLOCKSIZE,1,1);
   dim3 dimGrid=dim3(PAD_DIV(numElem,dimBlock.x),1,1);
-  hipLaunchKernelGGL((CalcLagrangeElementsPart2_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, numElem,
+  hipLaunchKernelGGL((CalcLagrangeElementsPart2_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcLagrangeElementsPart2_kernel"), numElem,
          meshGPU.m_dxx,meshGPU.m_dyy,meshGPU.m_dzz,
          meshGPU.m_vdov);
   HIP_DEBUGSYNC;
@@ -3528,8 +3613,7 @@ void CalcLagrangeElements(Real_t deltatime, int useCPU)
 }
 
 
-__global__
-void CalcMonotonicQGradientsForElems_kernel(
+static __device__ void CalcMonotonicQGradientsForElems_kernel_body(
                                             Index_t numElem,
                                             Index_t *nodelist,
                                             Real_t *x,Real_t *y,Real_t *z,Real_t *xd,Real_t *yd,Real_t *zd,
@@ -3682,6 +3766,14 @@ void CalcMonotonicQGradientsForElems_kernel(
   #undef SUM4
 }
 
+// CalcMonotonicQGradientsForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcMonotonicQGradientsForElems_kernel(unsigned long long *kt, Index_t numElem, Index_t *nodelist, Real_t *x,Real_t *y,Real_t *z,Real_t *xd,Real_t *yd,Real_t *zd, Real_t *volo,Real_t *vnew, Real_t *delx_zeta,Real_t *delv_zeta, Real_t *delx_xi,Real_t *delv_xi, Real_t *delx_eta,Real_t *delv_eta)
+{
+    KT_BEGIN();
+    CalcMonotonicQGradientsForElems_kernel_body(numElem, nodelist, x, y, z, xd, yd, zd, volo, vnew, delx_zeta, delv_zeta, delx_xi, delv_xi, delx_eta, delv_eta);
+    KT_END(kt);
+}
+
 
 static inline
 void CalcMonotonicQGradientsForElems_gpu()
@@ -3690,7 +3782,7 @@ void CalcMonotonicQGradientsForElems_gpu()
 
   dim3 dimBlock=dim3(BLOCKSIZE,1,1);
   dim3 dimGrid=dim3(PAD_DIV(numElem,dimBlock.x),1,1);
-  hipLaunchKernelGGL((CalcMonotonicQGradientsForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, numElem,
+  hipLaunchKernelGGL((CalcMonotonicQGradientsForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcMonotonicQGradientsForElems_kernel"), numElem,
          meshGPU.m_nodelist,
          meshGPU.m_x,meshGPU.m_y,meshGPU.m_z,meshGPU.m_xd,meshGPU.m_yd,meshGPU.m_zd,
          meshGPU.m_volo,meshGPU.m_vnew,
@@ -3864,8 +3956,7 @@ void CalcMonotonicQGradientsForElems(int useCPU)
 }
 
 
-__global__
-void CalcMonotonicQRegionForElems_kernel(
+static __device__ void CalcMonotonicQRegionForElems_kernel_body(
                                          Real_t qlc_monoq,
                                          Real_t qqc_monoq,
                                          Real_t monoq_limiter_mult,
@@ -4014,6 +4105,14 @@ void CalcMonotonicQRegionForElems_kernel(
   }
 }
 
+// CalcMonotonicQRegionForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcMonotonicQRegionForElems_kernel(unsigned long long *kt, Real_t qlc_monoq, Real_t qqc_monoq, Real_t monoq_limiter_mult, Real_t monoq_max_slope, Real_t ptiny, /* the elementset length */ Index_t elength, Index_t *matElemlist,Index_t *elemBC, Index_t *lxim,Index_t *lxip, Index_t *letam,Index_t *letap, Index_t *lzetam,Index_t *lzetap, Real_t *delv_xi,Real_t *delv_eta,Real_t *delv_zeta, Real_t *delx_xi,Real_t *delx_eta,Real_t *delx_zeta, Real_t *vdov,Real_t *elemMass,Real_t *volo,Real_t *vnew, Real_t *qq,Real_t *ql)
+{
+    KT_BEGIN();
+    CalcMonotonicQRegionForElems_kernel_body(qlc_monoq, qqc_monoq, monoq_limiter_mult, monoq_max_slope, ptiny, elength, matElemlist, elemBC, lxim, lxip, letam, letap, lzetam, lzetap, delv_xi, delv_eta, delv_zeta, delx_xi, delx_eta, delx_zeta, vdov, elemMass, volo, vnew, qq, ql);
+    KT_END(kt);
+}
+
 
 static inline
 void CalcMonotonicQRegionForElems_gpu(// parameters
@@ -4028,7 +4127,7 @@ void CalcMonotonicQRegionForElems_gpu(// parameters
 {
   dim3 dimBlock=dim3(BLOCKSIZE,1,1);
   dim3 dimGrid=dim3(PAD_DIV(elength,dimBlock.x),1,1);
-  hipLaunchKernelGGL((CalcMonotonicQRegionForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, qlc_monoq,qqc_monoq,monoq_limiter_mult,monoq_max_slope,ptiny,elength,
+  hipLaunchKernelGGL((CalcMonotonicQRegionForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcMonotonicQRegionForElems_kernel"), qlc_monoq,qqc_monoq,monoq_limiter_mult,monoq_max_slope,ptiny,elength,
          meshGPU.m_matElemlist,meshGPU.m_elemBC,
          meshGPU.m_lxim,meshGPU.m_lxip,
          meshGPU.m_letam,meshGPU.m_letap,
@@ -4278,8 +4377,7 @@ void CalcQForElems(int useCPU)
 }
 
 
-__global__
-void CalcPressureForElems_kernel(Real_t* p_new, Real_t* bvc,
+static __device__ void CalcPressureForElems_kernel_body(Real_t* p_new, Real_t* bvc,
                                  Real_t* pbvc, Real_t* e_old,
                                  Real_t* compression, Real_t *vnewc,
                                  Real_t pmin,
@@ -4305,6 +4403,14 @@ void CalcPressureForElems_kernel(Real_t* p_new, Real_t* bvc,
   }
 }
 
+// CalcPressureForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcPressureForElems_kernel(unsigned long long *kt, Real_t* p_new, Real_t* bvc, Real_t* pbvc, Real_t* e_old, Real_t* compression, Real_t *vnewc, Real_t pmin, Real_t p_cut, Real_t eosvmax, Index_t length, Real_t c1s)
+{
+    KT_BEGIN();
+    CalcPressureForElems_kernel_body(p_new, bvc, pbvc, e_old, compression, vnewc, pmin, p_cut, eosvmax, length, c1s);
+    KT_END(kt);
+}
+
 
 static inline
 void CalcPressureForElems_gpu(Real_t* p_new, Real_t* bvc,
@@ -4317,7 +4423,7 @@ void CalcPressureForElems_gpu(Real_t* p_new, Real_t* bvc,
   Real_t c1s = Real_t(2.0)/Real_t(3.0) ;
   dim3 dimBlock=dim3(BLOCKSIZE,1,1);
   dim3 dimGrid=dim3(PAD_DIV(length,dimBlock.x),1,1);
-  hipLaunchKernelGGL((CalcPressureForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, p_new,bvc,pbvc,e_old,compression,vnewc,pmin,p_cut,eosvmax,length,c1s);
+  hipLaunchKernelGGL((CalcPressureForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcPressureForElems_kernel"), p_new,bvc,pbvc,e_old,compression,vnewc,pmin,p_cut,eosvmax,length,c1s);
   HIP_DEBUGSYNC;
 }
 
@@ -4350,8 +4456,7 @@ void CalcPressureForElems_cpu(Real_t* p_new, Real_t* bvc,
   }
 }
 
-__global__
-void CalcEnergyForElemsPart1_kernel(
+static __device__ void CalcEnergyForElemsPart1_kernel_body(
                                     Index_t length,Real_t emin,
                                     Real_t *e_old,Real_t *delvc,Real_t *p_old,Real_t *q_old,Real_t *work,
                                     Real_t *e_new)
@@ -4367,9 +4472,16 @@ void CalcEnergyForElemsPart1_kernel(
   }
 }
 
+// CalcEnergyForElemsPart1_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcEnergyForElemsPart1_kernel(unsigned long long *kt, Index_t length,Real_t emin, Real_t *e_old,Real_t *delvc,Real_t *p_old,Real_t *q_old,Real_t *work, Real_t *e_new)
+{
+    KT_BEGIN();
+    CalcEnergyForElemsPart1_kernel_body(length, emin, e_old, delvc, p_old, q_old, work, e_new);
+    KT_END(kt);
+}
 
-__global__
-void CalcEnergyForElemsPart2_kernel(
+
+static __device__ void CalcEnergyForElemsPart2_kernel_body(
                                     Index_t length,Real_t rho0,Real_t e_cut,Real_t emin,
                                     Real_t *compHalfStep,Real_t *delvc,Real_t *pbvc,Real_t *bvc,
                                     Real_t *pHalfStep,Real_t *ql,Real_t *qq,Real_t *p_old,Real_t *q_old,Real_t *work,
@@ -4413,9 +4525,16 @@ void CalcEnergyForElemsPart2_kernel(
   }
 }
 
+// CalcEnergyForElemsPart2_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcEnergyForElemsPart2_kernel(unsigned long long *kt, Index_t length,Real_t rho0,Real_t e_cut,Real_t emin, Real_t *compHalfStep,Real_t *delvc,Real_t *pbvc,Real_t *bvc, Real_t *pHalfStep,Real_t *ql,Real_t *qq,Real_t *p_old,Real_t *q_old,Real_t *work, Real_t *e_new, Real_t *q_new)
+{
+    KT_BEGIN();
+    CalcEnergyForElemsPart2_kernel_body(length, rho0, e_cut, emin, compHalfStep, delvc, pbvc, bvc, pHalfStep, ql, qq, p_old, q_old, work, e_new, q_new);
+    KT_END(kt);
+}
 
-__global__
-void CalcEnergyForElemsPart3_kernel(
+
+static __device__ void CalcEnergyForElemsPart3_kernel_body(
                                     Index_t length,Real_t rho0,Real_t sixth,Real_t e_cut,Real_t emin,
                                     Real_t *pbvc,Real_t *vnewc,Real_t *bvc,Real_t *p_new,Real_t *ql,Real_t *qq,
                                     Real_t *p_old,Real_t *q_old,Real_t *pHalfStep,Real_t *q_new,Real_t *delvc,
@@ -4454,9 +4573,16 @@ void CalcEnergyForElemsPart3_kernel(
   }
 }
 
+// CalcEnergyForElemsPart3_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcEnergyForElemsPart3_kernel(unsigned long long *kt, Index_t length,Real_t rho0,Real_t sixth,Real_t e_cut,Real_t emin, Real_t *pbvc,Real_t *vnewc,Real_t *bvc,Real_t *p_new,Real_t *ql,Real_t *qq, Real_t *p_old,Real_t *q_old,Real_t *pHalfStep,Real_t *q_new,Real_t *delvc, Real_t *e_new)
+{
+    KT_BEGIN();
+    CalcEnergyForElemsPart3_kernel_body(length, rho0, sixth, e_cut, emin, pbvc, vnewc, bvc, p_new, ql, qq, p_old, q_old, pHalfStep, q_new, delvc, e_new);
+    KT_END(kt);
+}
 
-__global__
-void CalcEnergyForElemsPart4_kernel(
+
+static __device__ void CalcEnergyForElemsPart4_kernel_body(
                                     Index_t length,Real_t rho0,Real_t q_cut,
                                     Real_t *delvc,Real_t *pbvc,Real_t *e_new,Real_t *vnewc,Real_t *bvc,
                                     Real_t *p_new,Real_t *ql,Real_t *qq,
@@ -4482,6 +4608,14 @@ void CalcEnergyForElemsPart4_kernel(
   }
 }
 
+// CalcEnergyForElemsPart4_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcEnergyForElemsPart4_kernel(unsigned long long *kt, Index_t length,Real_t rho0,Real_t q_cut, Real_t *delvc,Real_t *pbvc,Real_t *e_new,Real_t *vnewc,Real_t *bvc, Real_t *p_new,Real_t *ql,Real_t *qq, Real_t *q_new)
+{
+    KT_BEGIN();
+    CalcEnergyForElemsPart4_kernel_body(length, rho0, q_cut, delvc, pbvc, e_new, vnewc, bvc, p_new, ql, qq, q_new);
+    KT_END(kt);
+}
+
 static inline
 void CalcEnergyForElems_gpu(Real_t* p_new, Real_t* e_new, Real_t* q_new,
                             Real_t* bvc, Real_t* pbvc,
@@ -4500,15 +4634,15 @@ void CalcEnergyForElems_gpu(Real_t* p_new, Real_t* e_new, Real_t* q_new,
   dim3 dimBlock=dim3(BLOCKSIZE,1,1);
   dim3 dimGrid=dim3(PAD_DIV(length,dimBlock.x),1,1);
 
-  HIP( hipHostMalloc(&pHalfStep,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&pHalfStep,sizeof(Real_t)*length) );
 
-  hipLaunchKernelGGL((CalcEnergyForElemsPart1_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, length,emin,e_old,delvc,p_old,q_old,work,e_new);
+  hipLaunchKernelGGL((CalcEnergyForElemsPart1_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcEnergyForElemsPart1_kernel"), length,emin,e_old,delvc,p_old,q_old,work,e_new);
   HIP_DEBUGSYNC;
 
   CalcPressureForElems_gpu(pHalfStep, bvc, pbvc, e_new, compHalfStep, vnewc,
                            pmin, p_cut, eosvmax, length);
 
-  hipLaunchKernelGGL((CalcEnergyForElemsPart2_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, length,rho0,e_cut,emin,
+  hipLaunchKernelGGL((CalcEnergyForElemsPart2_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcEnergyForElemsPart2_kernel"), length,rho0,e_cut,emin,
          compHalfStep,delvc,pbvc,bvc,pHalfStep,ql,qq,p_old,q_old,work,
          e_new,
          q_new);
@@ -4517,7 +4651,7 @@ void CalcEnergyForElems_gpu(Real_t* p_new, Real_t* e_new, Real_t* q_new,
   CalcPressureForElems_gpu(p_new, bvc, pbvc, e_new, compression, vnewc,
                            pmin, p_cut, eosvmax, length);
 
-  hipLaunchKernelGGL((CalcEnergyForElemsPart3_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, length,rho0,sixth,e_cut,emin,
+  hipLaunchKernelGGL((CalcEnergyForElemsPart3_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcEnergyForElemsPart3_kernel"), length,rho0,sixth,e_cut,emin,
          pbvc,vnewc,bvc,p_new,ql,qq,
          p_old,q_old,pHalfStep,q_new,delvc,
          e_new);
@@ -4526,7 +4660,7 @@ void CalcEnergyForElems_gpu(Real_t* p_new, Real_t* e_new, Real_t* q_new,
   CalcPressureForElems_gpu(p_new, bvc, pbvc, e_new, compression, vnewc,
                            pmin, p_cut, eosvmax, length);
 
-  hipLaunchKernelGGL((CalcEnergyForElemsPart4_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, length,rho0,q_cut,
+  hipLaunchKernelGGL((CalcEnergyForElemsPart4_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcEnergyForElemsPart4_kernel"), length,rho0,q_cut,
          delvc,pbvc,e_new,vnewc,bvc,
          p_new,ql,qq,
          q_new);
@@ -4661,8 +4795,7 @@ void CalcEnergyForElems_cpu(Real_t* p_new, Real_t* e_new, Real_t* q_new,
 }
 
 
-__global__
-void CalcSoundSpeedForElems_kernel(Real_t *vnewc, Real_t rho0, Real_t *enewc,
+static __device__ void CalcSoundSpeedForElems_kernel_body(Real_t *vnewc, Real_t rho0, Real_t *enewc,
                                    Real_t *pnewc, Real_t *pbvc,
                                    Real_t *bvc, Real_t ss4o3, Index_t nz,Index_t *matElemlist,
                                    Real_t *ss)
@@ -4680,6 +4813,14 @@ void CalcSoundSpeedForElems_kernel(Real_t *vnewc, Real_t rho0, Real_t *enewc,
   }
 }
 
+// CalcSoundSpeedForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcSoundSpeedForElems_kernel(unsigned long long *kt, Real_t *vnewc, Real_t rho0, Real_t *enewc, Real_t *pnewc, Real_t *pbvc, Real_t *bvc, Real_t ss4o3, Index_t nz,Index_t *matElemlist, Real_t *ss)
+{
+    KT_BEGIN();
+    CalcSoundSpeedForElems_kernel_body(vnewc, rho0, enewc, pnewc, pbvc, bvc, ss4o3, nz, matElemlist, ss);
+    KT_END(kt);
+}
+
 
 static inline
 void CalcSoundSpeedForElems_gpu(Real_t *vnewc, Real_t rho0, Real_t *enewc,
@@ -4688,7 +4829,7 @@ void CalcSoundSpeedForElems_gpu(Real_t *vnewc, Real_t rho0, Real_t *enewc,
 {
   dim3 dimBlock=dim3(BLOCKSIZE,1,1);
   dim3 dimGrid=dim3(PAD_DIV(nz,dimBlock.x),1,1);
-  hipLaunchKernelGGL((CalcSoundSpeedForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, vnewc,rho0,enewc,pnewc,pbvc,bvc,ss4o3,nz,meshGPU.m_matElemlist,meshGPU.m_ss);
+  hipLaunchKernelGGL((CalcSoundSpeedForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcSoundSpeedForElems_kernel"), vnewc,rho0,enewc,pnewc,pbvc,bvc,ss4o3,nz,meshGPU.m_matElemlist,meshGPU.m_ss);
   HIP_DEBUGSYNC;
 
 }
@@ -4710,8 +4851,7 @@ void CalcSoundSpeedForElems_cpu(Real_t *vnewc, Real_t rho0, Real_t *enewc,
 }
 
 
-__global__
-void EvalEOSForElemsPart1_kernel(
+static __device__ void EvalEOSForElemsPart1_kernel_body(
                                  Index_t length,Real_t eosvmin,Real_t eosvmax,
                                  Index_t *matElemlist,
                                  Real_t *e,Real_t *delv,Real_t *p,Real_t *q,Real_t *qq,Real_t *ql,
@@ -4752,9 +4892,16 @@ void EvalEOSForElemsPart1_kernel(
   }
 }
 
+// EvalEOSForElemsPart1_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void EvalEOSForElemsPart1_kernel(unsigned long long *kt, Index_t length,Real_t eosvmin,Real_t eosvmax, Index_t *matElemlist, Real_t *e,Real_t *delv,Real_t *p,Real_t *q,Real_t *qq,Real_t *ql, Real_t *vnewc, Real_t *e_old,Real_t *delvc,Real_t *p_old,Real_t *q_old, Real_t *compression,Real_t *compHalfStep, Real_t *qq_old,Real_t *ql_old,Real_t *work)
+{
+    KT_BEGIN();
+    EvalEOSForElemsPart1_kernel_body(length, eosvmin, eosvmax, matElemlist, e, delv, p, q, qq, ql, vnewc, e_old, delvc, p_old, q_old, compression, compHalfStep, qq_old, ql_old, work);
+    KT_END(kt);
+}
 
-__global__
-void EvalEOSForElemsPart2_kernel(
+
+static __device__ void EvalEOSForElemsPart2_kernel_body(
                                  Index_t length,
                                  Index_t *matElemlist,Real_t *p_new,Real_t *e_new,Real_t *q_new,
                                  Real_t *p,Real_t *e,Real_t *q)
@@ -4766,6 +4913,14 @@ void EvalEOSForElemsPart2_kernel(
         e[zidx] = e_new[i];
         q[zidx] = q_new[i];
   }
+}
+
+// EvalEOSForElemsPart2_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void EvalEOSForElemsPart2_kernel(unsigned long long *kt, Index_t length, Index_t *matElemlist,Real_t *p_new,Real_t *e_new,Real_t *q_new, Real_t *p,Real_t *e,Real_t *q)
+{
+    KT_BEGIN();
+    EvalEOSForElemsPart2_kernel_body(length, matElemlist, p_new, e_new, q_new, p, e, q);
+    KT_END(kt);
 }
 
 
@@ -4787,25 +4942,25 @@ void EvalEOSForElems_gpu(Real_t *vnewc, Index_t length)
   Real_t *compression,*compHalfStep;
   Real_t *qq,*ql,*work,*p_new,*e_new,*q_new,*bvc,*pbvc;
 
-  HIP( hipHostMalloc(&e_old,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&delvc,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&p_old,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&q_old,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&compression,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&compHalfStep,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&qq,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&ql,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&work,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&p_new,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&e_new,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&q_new,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&bvc,sizeof(Real_t)*length) );
-  HIP( hipHostMalloc(&pbvc,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&e_old,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&delvc,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&p_old,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&q_old,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&compression,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&compHalfStep,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&qq,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&ql,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&work,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&p_new,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&e_new,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&q_new,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&bvc,sizeof(Real_t)*length) );
+  HIP( hipMalloc(&pbvc,sizeof(Real_t)*length) );
 
   dim3 dimBlock=dim3(BLOCKSIZE,1,1);
   dim3 dimGrid=dim3(PAD_DIV(length,dimBlock.x),1,1);
 
-  hipLaunchKernelGGL((EvalEOSForElemsPart1_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, length,eosvmin,eosvmax,
+  hipLaunchKernelGGL((EvalEOSForElemsPart1_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("EvalEOSForElemsPart1_kernel"), length,eosvmin,eosvmax,
          meshGPU.m_matElemlist,
          meshGPU.m_e,meshGPU.m_delv,meshGPU.m_p,meshGPU.m_q,meshGPU.m_qq,meshGPU.m_ql,
          vnewc,
@@ -4820,7 +4975,7 @@ void EvalEOSForElems_gpu(Real_t *vnewc, Index_t length)
                          qq, ql, rho0, eosvmax, length);
 
 
-  hipLaunchKernelGGL((EvalEOSForElemsPart2_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, length,
+  hipLaunchKernelGGL((EvalEOSForElemsPart2_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("EvalEOSForElemsPart2_kernel"), length,
          meshGPU.m_matElemlist,p_new,e_new,q_new,
          meshGPU.m_p,meshGPU.m_e,meshGPU.m_q);
   HIP_DEBUGSYNC;
@@ -4969,8 +5124,7 @@ void EvalEOSForElems_cpu(Real_t *vnewc, Index_t length)
 }
 
 
-__global__
-void ApplyMaterialPropertiesForElemsPart1_kernel(
+static __device__ void ApplyMaterialPropertiesForElemsPart1_kernel_body(
                                                  Index_t length,Real_t eosvmin,Real_t eosvmax,
                                                  Index_t *matElemlist,Real_t *vnew,
                                                  Real_t *vnewc)
@@ -4992,6 +5146,14 @@ void ApplyMaterialPropertiesForElemsPart1_kernel(
   }
 }
 
+// ApplyMaterialPropertiesForElemsPart1_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void ApplyMaterialPropertiesForElemsPart1_kernel(unsigned long long *kt, Index_t length,Real_t eosvmin,Real_t eosvmax, Index_t *matElemlist,Real_t *vnew, Real_t *vnewc)
+{
+    KT_BEGIN();
+    ApplyMaterialPropertiesForElemsPart1_kernel_body(length, eosvmin, eosvmax, matElemlist, vnew, vnewc);
+    KT_END(kt);
+}
+
 
 static inline
 void ApplyMaterialPropertiesForElems_gpu()
@@ -5004,11 +5166,11 @@ void ApplyMaterialPropertiesForElems_gpu()
         Real_t eosvmax = mesh.eosvmax() ;
         Real_t *vnewc;
 
-        HIP( hipHostMalloc(&vnewc,sizeof(Real_t)*length) );
+        HIP( hipMalloc(&vnewc,sizeof(Real_t)*length) );
 
         dim3 dimBlock=dim3(BLOCKSIZE,1,1);
         dim3 dimGrid=dim3(PAD_DIV(length,dimBlock.x),1,1);
-        hipLaunchKernelGGL((ApplyMaterialPropertiesForElemsPart1_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, length,eosvmin,eosvmax,
+        hipLaunchKernelGGL((ApplyMaterialPropertiesForElemsPart1_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("ApplyMaterialPropertiesForElemsPart1_kernel"), length,eosvmin,eosvmax,
            meshGPU.m_matElemlist,meshGPU.m_vnew,
            vnewc);
         HIP_DEBUGSYNC;
@@ -5105,8 +5267,7 @@ void ApplyMaterialPropertiesForElems(int useCPU)
   }
 }
 
-__global__
-void UpdateVolumesForElems_kernel(Index_t numElem,Real_t v_cut,
+static __device__ void UpdateVolumesForElems_kernel_body(Index_t numElem,Real_t v_cut,
                                   Real_t *vnew,
                                   Real_t *v)
 {
@@ -5121,6 +5282,14 @@ void UpdateVolumesForElems_kernel(Index_t numElem,Real_t v_cut,
   }
 }
 
+// UpdateVolumesForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void UpdateVolumesForElems_kernel(unsigned long long *kt, Index_t numElem,Real_t v_cut, Real_t *vnew, Real_t *v)
+{
+    KT_BEGIN();
+    UpdateVolumesForElems_kernel_body(numElem, v_cut, vnew, v);
+    KT_END(kt);
+}
+
 
 static inline
 void UpdateVolumesForElems_gpu()
@@ -5130,7 +5299,7 @@ void UpdateVolumesForElems_gpu()
         Real_t v_cut = mesh.v_cut();
         dim3 dimBlock=dim3(BLOCKSIZE,1,1);
         dim3 dimGrid=dim3(PAD_DIV(numElem,dimBlock.x),1,1);
-        hipLaunchKernelGGL((UpdateVolumesForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, numElem,v_cut,meshGPU.m_vnew,meshGPU.m_v);
+        hipLaunchKernelGGL((UpdateVolumesForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("UpdateVolumesForElems_kernel"), numElem,v_cut,meshGPU.m_vnew,meshGPU.m_v);
   }
 }
 
@@ -5187,8 +5356,7 @@ void LagrangeElements(int useCPU)
 }
 
 
-__global__
-void CalcCourantConstraintForElems_kernel(
+static __device__ void CalcCourantConstraintForElems_kernel_body(
                                           Index_t length,Real_t qqc2,
                                           Index_t *matElemlist,Real_t *ss,Real_t *vdov,Real_t *arealg,
                                           Real_t *mindtcourant)
@@ -5222,6 +5390,14 @@ void CalcCourantConstraintForElems_kernel(
         mindtcourant[hipBlockIdx_x]=minArray[0];
 }
 
+// CalcCourantConstraintForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcCourantConstraintForElems_kernel(unsigned long long *kt, Index_t length,Real_t qqc2, Index_t *matElemlist,Real_t *ss,Real_t *vdov,Real_t *arealg, Real_t *mindtcourant)
+{
+    KT_BEGIN();
+    CalcCourantConstraintForElems_kernel_body(length, qqc2, matElemlist, ss, vdov, arealg, mindtcourant);
+    KT_END(kt);
+}
+
 
 static inline
 void CalcCourantConstraintForElems_gpu()
@@ -5234,9 +5410,9 @@ void CalcCourantConstraintForElems_gpu()
   dim3 dimGrid=dim3(PAD_DIV(length,dimBlock.x),1,1);
 
   Real_t *dev_mindtcourant;
-  HIP( hipHostMalloc(&dev_mindtcourant,sizeof(Real_t)*dimGrid.x) );
+  HIP( hipMalloc(&dev_mindtcourant,sizeof(Real_t)*dimGrid.x) );
 
-  hipLaunchKernelGGL((CalcCourantConstraintForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, length,qqc2,
+  hipLaunchKernelGGL((CalcCourantConstraintForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcCourantConstraintForElems_kernel"), length,qqc2,
          meshGPU.m_matElemlist,meshGPU.m_ss,meshGPU.m_vdov,meshGPU.m_arealg,
          dev_mindtcourant);
   HIP_DEBUGSYNC;
@@ -5316,8 +5492,7 @@ void CalcCourantConstraintForElems(int useCPU)
 }
 
 
-__global__
-void CalcHydroConstraintForElems_kernel(
+static __device__ void CalcHydroConstraintForElems_kernel_body(
                                         Index_t length,Real_t dvovmax,
                                         Index_t *matElemlist,Real_t *vdov,
                                         Real_t *mindthydro)
@@ -5342,6 +5517,14 @@ void CalcHydroConstraintForElems_kernel(
         mindthydro[hipBlockIdx_x]=minArray[0];
 }
 
+// CalcHydroConstraintForElems_kernel timed with s_memrealtime (kernel_timer.h)
+__global__ void CalcHydroConstraintForElems_kernel(unsigned long long *kt, Index_t length,Real_t dvovmax, Index_t *matElemlist,Real_t *vdov, Real_t *mindthydro)
+{
+    KT_BEGIN();
+    CalcHydroConstraintForElems_kernel_body(length, dvovmax, matElemlist, vdov, mindthydro);
+    KT_END(kt);
+}
+
 
 static inline
 void CalcHydroConstraintForElems_gpu()
@@ -5353,9 +5536,9 @@ void CalcHydroConstraintForElems_gpu()
   dim3 dimGrid=dim3(PAD_DIV(length,dimBlock.x),1,1);
 
   Real_t *dev_mindthydro;
-  HIP( hipHostMalloc(&dev_mindthydro,sizeof(Real_t)*dimGrid.x) );
+  HIP( hipMalloc(&dev_mindthydro,sizeof(Real_t)*dimGrid.x) );
 
-  hipLaunchKernelGGL((CalcHydroConstraintForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, length,dvovmax,
+  hipLaunchKernelGGL((CalcHydroConstraintForElems_kernel), dim3(dimGrid), dim3(dimBlock), 0, 0, kt.next("CalcHydroConstraintForElems_kernel"), length,dvovmax,
          meshGPU.m_matElemlist,meshGPU.m_vdov,
          dev_mindthydro);
   HIP_DEBUGSYNC;
@@ -5674,6 +5857,7 @@ int main(int argc, char *argv[])
   meshGPU.init(&mesh);
   meshGPU.freshenGPU();
 
+  kt.init();
   /* timestep to solution */
   int its=0;
 #if 0
@@ -5712,6 +5896,7 @@ int main(int argc, char *argv[])
   printf("Kernel 1 Time: %f ms\n", kernel1.elapsedTime);
   free_timer(&kernel1);
   printf("iterations: %d\n",its);
+  kt.report();
 
 #if LULESH_WRITE_OUTPUT
      FC(x);

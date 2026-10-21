@@ -5,7 +5,7 @@ CXXFLAGS += -I$(GEM5_ROOT) -I$(GEM5_ROOT)/include
 LDFLAGS += -L$(GEM5_ROOT)/util/m5/build/x86/out -lm5
 
 all: $(BIN_DIR)
-	$(HIP_PATH)/bin/hipcc src/lulesh.hip.cc $(CXXFLAGS) -o $(BIN_DIR)/lulesh.gem5-fusion --offload-arch=gfx900 -DGEM5_FUSION $(LDFLAGS)
+	$(HIP_PATH)/bin/hipcc src/lulesh.hip.cc $(CXXFLAGS) -o $(BIN_DIR)/lulesh.gem5-fusion --offload-arch=gfx942 -DGEM5_FUSION $(LDFLAGS)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
