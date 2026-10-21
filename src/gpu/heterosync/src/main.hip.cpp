@@ -1,9 +1,11 @@
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <assert.h>
 #include <math.h>
 #include "hip/hip_runtime.h"
 #include "hip_error.h"
+#include "kernel_timer.h"
 
 #define MAX_BACKOFF             1024
 #define NUM_WIS_PER_WG 64
@@ -11,6 +13,18 @@
 #define MAD_ADD 0.25f
 #define NUM_WORDS_PER_CACHELINE 16
 #define NUM_WIS_PER_QUARTERWAVE 16
+
+// GPU size: one MI300X XCD (a CPX partition), fixed at compile time so a run
+// does the same work on the hardware and in gem5 whatever the device reports.
+// Override with -D for other configurations.
+#ifndef XCD_NUM_CU
+#define XCD_NUM_CU 38                 // CUs in one XCD
+#endif
+#ifndef XCD_MAX_WIS_PER_WG
+#define XCD_MAX_WIS_PER_WG 1024       // max threads per WG
+#endif
+#define XCD_MAX_WGS_PER_CU (XCD_MAX_WIS_PER_WG / NUM_WIS_PER_WG)
+#define XCD_MAX_WGS (XCD_MAX_WGS_PER_CU * XCD_NUM_CU)
 
 // separate .h files
 #include "hipLocksBarrier.h"
@@ -22,8 +36,8 @@ const int NUM_REPEATS = 10;
 int NUM_LDST = 0;
 int numWGs = 0;
 // number of CUs our GPU has
-int NUM_CU = 0;
-int MAX_WGS = 0;
+int NUM_CU = XCD_NUM_CU;
+int MAX_WGS = XCD_MAX_WGS;
 
 bool pageAlign = false;
 
@@ -101,7 +115,7 @@ inline __device__ void accessData_semRd(float * storage,
 
 // performs a tree barrier.  Each WG on an CU accesses unique data then joins a
 // local barrier.  1 of the WGs from each CU then joins the global barrier
-__global__ void kernelAtomicTreeBarrierUniq(float * storage,
+static __device__ void kernelAtomicTreeBarrierUniq_body(float * storage,
                                             hipLockData_t * gpuLockData,
                                             unsigned int * perCUBarrierBuffers,
                                             const int ITERATIONS,
@@ -148,9 +162,17 @@ __global__ void kernelAtomicTreeBarrierUniq(float * storage,
   }
 }
 
+// kernelAtomicTreeBarrierUniq timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelAtomicTreeBarrierUniq(unsigned long long *kt, float * storage, hipLockData_t * gpuLockData, unsigned int * perCUBarrierBuffers, const int ITERATIONS, const int NUM_LDST, const int NUM_CU, const int MAX_WGS)
+{
+    KT_BEGIN();
+    kernelAtomicTreeBarrierUniq_body(storage, gpuLockData, perCUBarrierBuffers, ITERATIONS, NUM_LDST, NUM_CU, MAX_WGS);
+    KT_END(kt);
+}
+
 // like the tree barrier but also has WGs exchange work locally before joining
 // the global barrier
-__global__ void kernelAtomicTreeBarrierUniqLocalExch(float * storage,
+static __device__ void kernelAtomicTreeBarrierUniqLocalExch_body(float * storage,
                                                      hipLockData_t * gpuLockData,
                                                      unsigned int * perCUBarrierBuffers,
                                                      const int ITERATIONS,
@@ -210,8 +232,16 @@ __global__ void kernelAtomicTreeBarrierUniqLocalExch(float * storage,
   }
 }
 
+// kernelAtomicTreeBarrierUniqLocalExch timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelAtomicTreeBarrierUniqLocalExch(unsigned long long *kt, float * storage, hipLockData_t * gpuLockData, unsigned int * perCUBarrierBuffers, const int ITERATIONS, const int NUM_LDST, const int NUM_CU, const int MAX_WGS)
+{
+    KT_BEGIN();
+    kernelAtomicTreeBarrierUniqLocalExch_body(storage, gpuLockData, perCUBarrierBuffers, ITERATIONS, NUM_LDST, NUM_CU, MAX_WGS);
+    KT_END(kt);
+}
+
 // performs a tree barrier like above but with a lock-free barrier
-__global__ void kernelFBSTreeBarrierUniq(float * storage,
+static __device__ void kernelFBSTreeBarrierUniq_body(float * storage,
                                          hipLockData_t * gpuLockData,
                                          unsigned int * perCUBarrierBuffers,
                                          const int ITERATIONS,
@@ -255,9 +285,17 @@ __global__ void kernelFBSTreeBarrierUniq(float * storage,
   }
 }
 
+// kernelFBSTreeBarrierUniq timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelFBSTreeBarrierUniq(unsigned long long *kt, float * storage, hipLockData_t * gpuLockData, unsigned int * perCUBarrierBuffers, const int ITERATIONS, const int NUM_LDST, const int NUM_CU, const int MAX_WGS)
+{
+    KT_BEGIN();
+    kernelFBSTreeBarrierUniq_body(storage, gpuLockData, perCUBarrierBuffers, ITERATIONS, NUM_LDST, NUM_CU, MAX_WGS);
+    KT_END(kt);
+}
+
 // performs a tree barrier like above but with a lock-free barrier and has WGs
 // exchange work locally before joining the global barrier
-__global__ void kernelFBSTreeBarrierUniqLocalExch(float * storage,
+static __device__ void kernelFBSTreeBarrierUniqLocalExch_body(float * storage,
                                                   hipLockData_t * gpuLockData,
                                                   unsigned int * perCUBarrierBuffers,
                                                   const int ITERATIONS,
@@ -314,7 +352,15 @@ __global__ void kernelFBSTreeBarrierUniqLocalExch(float * storage,
   }
 }
 
-__global__ void kernelSleepingMutex(hipMutex_t mutex, float * storage,
+// kernelFBSTreeBarrierUniqLocalExch timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelFBSTreeBarrierUniqLocalExch(unsigned long long *kt, float * storage, hipLockData_t * gpuLockData, unsigned int * perCUBarrierBuffers, const int ITERATIONS, const int NUM_LDST, const int NUM_CU, const int MAX_WGS)
+{
+    KT_BEGIN();
+    kernelFBSTreeBarrierUniqLocalExch_body(storage, gpuLockData, perCUBarrierBuffers, ITERATIONS, NUM_LDST, NUM_CU, MAX_WGS);
+    KT_END(kt);
+}
+
+static __device__ void kernelSleepingMutex_body(hipMutex_t mutex, float * storage,
                                     hipLockData_t * gpuLockData,
                                     const int ITERATIONS, const int NUM_LDST,
                                     const int NUM_CU)
@@ -347,7 +393,15 @@ __global__ void kernelSleepingMutex(hipMutex_t mutex, float * storage,
   }
 }
 
-__global__ void kernelSleepingMutexUniq(hipMutex_t mutex, float * storage,
+// kernelSleepingMutex timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelSleepingMutex(unsigned long long *kt, hipMutex_t mutex, float * storage, hipLockData_t * gpuLockData, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelSleepingMutex_body(mutex, storage, gpuLockData, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
+static __device__ void kernelSleepingMutexUniq_body(hipMutex_t mutex, float * storage,
                                         hipLockData_t * gpuLockData,
                                         const int ITERATIONS,
                                         const int NUM_LDST, const int NUM_CU)
@@ -381,7 +435,15 @@ __global__ void kernelSleepingMutexUniq(hipMutex_t mutex, float * storage,
   }
 }
 
-__global__ void kernelFetchAndAddMutex(hipMutex_t mutex, float * storage,
+// kernelSleepingMutexUniq timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelSleepingMutexUniq(unsigned long long *kt, hipMutex_t mutex, float * storage, hipLockData_t * gpuLockData, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelSleepingMutexUniq_body(mutex, storage, gpuLockData, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
+static __device__ void kernelFetchAndAddMutex_body(hipMutex_t mutex, float * storage,
                                        hipLockData_t * gpuLockData,
                                        const int ITERATIONS,
                                        const int NUM_LDST, const int NUM_CU)
@@ -406,7 +468,15 @@ __global__ void kernelFetchAndAddMutex(hipMutex_t mutex, float * storage,
   }
 }
 
-__global__ void kernelFetchAndAddMutexUniq(hipMutex_t mutex, float * storage,
+// kernelFetchAndAddMutex timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelFetchAndAddMutex(unsigned long long *kt, hipMutex_t mutex, float * storage, hipLockData_t * gpuLockData, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelFetchAndAddMutex_body(mutex, storage, gpuLockData, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
+static __device__ void kernelFetchAndAddMutexUniq_body(hipMutex_t mutex, float * storage,
                                            hipLockData_t * gpuLockData,
                                            const int ITERATIONS,
                                            const int NUM_LDST,
@@ -432,7 +502,15 @@ __global__ void kernelFetchAndAddMutexUniq(hipMutex_t mutex, float * storage,
   }
 }
 
-__global__ void kernelSpinLockMutex(hipMutex_t mutex, float * storage,
+// kernelFetchAndAddMutexUniq timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelFetchAndAddMutexUniq(unsigned long long *kt, hipMutex_t mutex, float * storage, hipLockData_t * gpuLockData, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelFetchAndAddMutexUniq_body(mutex, storage, gpuLockData, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
+static __device__ void kernelSpinLockMutex_body(hipMutex_t mutex, float * storage,
                                     hipLockData_t * gpuLockData,
                                     const int ITERATIONS, const int NUM_LDST,
                                     const int NUM_CU)
@@ -456,7 +534,15 @@ __global__ void kernelSpinLockMutex(hipMutex_t mutex, float * storage,
   }
 }
 
-__global__ void kernelSpinLockMutexUniq(hipMutex_t mutex, float * storage,
+// kernelSpinLockMutex timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelSpinLockMutex(unsigned long long *kt, hipMutex_t mutex, float * storage, hipLockData_t * gpuLockData, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelSpinLockMutex_body(mutex, storage, gpuLockData, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
+static __device__ void kernelSpinLockMutexUniq_body(hipMutex_t mutex, float * storage,
                                         hipLockData_t * gpuLockData,
                                         const int ITERATIONS,
                                         const int NUM_LDST, const int NUM_CU)
@@ -480,7 +566,15 @@ __global__ void kernelSpinLockMutexUniq(hipMutex_t mutex, float * storage,
   }
 }
 
-__global__ void kernelEBOMutex(hipMutex_t mutex, float * storage,
+// kernelSpinLockMutexUniq timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelSpinLockMutexUniq(unsigned long long *kt, hipMutex_t mutex, float * storage, hipLockData_t * gpuLockData, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelSpinLockMutexUniq_body(mutex, storage, gpuLockData, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
+static __device__ void kernelEBOMutex_body(hipMutex_t mutex, float * storage,
                                hipLockData_t * gpuLockData,
                                const int ITERATIONS, const int NUM_LDST,
                                const int NUM_CU)
@@ -504,7 +598,15 @@ __global__ void kernelEBOMutex(hipMutex_t mutex, float * storage,
   }
 }
 
-__global__ void kernelEBOMutexUniq(hipMutex_t mutex, float * storage,
+// kernelEBOMutex timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelEBOMutex(unsigned long long *kt, hipMutex_t mutex, float * storage, hipLockData_t * gpuLockData, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelEBOMutex_body(mutex, storage, gpuLockData, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
+static __device__ void kernelEBOMutexUniq_body(hipMutex_t mutex, float * storage,
                                    hipLockData_t * gpuLockData,
                                    const int ITERATIONS, const int NUM_LDST,
                                    const int NUM_CU)
@@ -528,9 +630,17 @@ __global__ void kernelEBOMutexUniq(hipMutex_t mutex, float * storage,
   }
 }
 
+// kernelEBOMutexUniq timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelEBOMutexUniq(unsigned long long *kt, hipMutex_t mutex, float * storage, hipLockData_t * gpuLockData, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelEBOMutexUniq_body(mutex, storage, gpuLockData, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
 // All WGs on all CUs access the same data with 1 writer per CU (and N-1)
 // readers per CU.
-__global__ void kernelSpinLockSemaphore(hipSemaphore_t sem,
+static __device__ void kernelSpinLockSemaphore_body(hipSemaphore_t sem,
                                         float * storage,
                                         hipLockData_t * gpuLockData,
                                         const unsigned int numStorageLocs,
@@ -607,7 +717,15 @@ __global__ void kernelSpinLockSemaphore(hipSemaphore_t sem,
   }
 }
 
-__global__ void kernelSpinLockSemaphoreUniq(hipSemaphore_t sem,
+// kernelSpinLockSemaphore timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelSpinLockSemaphore(unsigned long long *kt, hipSemaphore_t sem, float * storage, hipLockData_t * gpuLockData, const unsigned int numStorageLocs, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelSpinLockSemaphore_body(sem, storage, gpuLockData, numStorageLocs, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
+static __device__ void kernelSpinLockSemaphoreUniq_body(hipSemaphore_t sem,
                                             float * storage,
                                             hipLockData_t * gpuLockData,
                                             const int ITERATIONS,
@@ -683,9 +801,17 @@ __global__ void kernelSpinLockSemaphoreUniq(hipSemaphore_t sem,
   }
 }
 
+// kernelSpinLockSemaphoreUniq timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelSpinLockSemaphoreUniq(unsigned long long *kt, hipSemaphore_t sem, float * storage, hipLockData_t * gpuLockData, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelSpinLockSemaphoreUniq_body(sem, storage, gpuLockData, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
 // All WGs on all CUs access the same data with 1 writer per CU (and N-1)
 // readers per CU.
-__global__ void kernelEBOSemaphore(hipSemaphore_t sem, float * storage,
+static __device__ void kernelEBOSemaphore_body(hipSemaphore_t sem, float * storage,
                                    hipLockData_t * gpuLockData,
                                    const unsigned int numStorageLocs,
                                    const int ITERATIONS, const int NUM_LDST,
@@ -760,7 +886,15 @@ __global__ void kernelEBOSemaphore(hipSemaphore_t sem, float * storage,
   }
 }
 
-__global__ void kernelEBOSemaphoreUniq(hipSemaphore_t sem, float * storage,
+// kernelEBOSemaphore timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelEBOSemaphore(unsigned long long *kt, hipSemaphore_t sem, float * storage, hipLockData_t * gpuLockData, const unsigned int numStorageLocs, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelEBOSemaphore_body(sem, storage, gpuLockData, numStorageLocs, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
+static __device__ void kernelEBOSemaphoreUniq_body(hipSemaphore_t sem, float * storage,
                                        hipLockData_t * gpuLockData,
                                        const int ITERATIONS,
                                        const int NUM_LDST,
@@ -835,6 +969,14 @@ __global__ void kernelEBOSemaphoreUniq(hipSemaphore_t sem, float * storage,
   }
 }
 
+// kernelEBOSemaphoreUniq timed with s_memrealtime (kernel_timer.h)
+__global__ void kernelEBOSemaphoreUniq(unsigned long long *kt, hipSemaphore_t sem, float * storage, hipLockData_t * gpuLockData, const int ITERATIONS, const int NUM_LDST, const int NUM_CU)
+{
+    KT_BEGIN();
+    kernelEBOSemaphoreUniq_body(sem, storage, gpuLockData, ITERATIONS, NUM_LDST, NUM_CU);
+    KT_END(kt);
+}
+
 void invokeAtomicTreeBarrier(float * storage_d, unsigned int * perCUBarriers_d,
                              int numIters)
 {
@@ -843,8 +985,8 @@ void invokeAtomicTreeBarrier(float * storage_d, unsigned int * perCUBarriers_d,
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelAtomicTreeBarrierUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        storage_d, cpuLockData, perCUBarriers_d, numIters, NUM_LDST, NUM_CU,
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelAtomicTreeBarrierUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelAtomicTreeBarrierUniq"),
+        storage_d, gpuLockData, perCUBarriers_d, numIters, NUM_LDST, NUM_CU,
         MAX_WGS);
 
     // Blocks until the device has completed all preceding requested
@@ -863,8 +1005,8 @@ void invokeAtomicTreeBarrierLocalExch(float * storage_d,
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelAtomicTreeBarrierUniqLocalExch), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        storage_d, cpuLockData, perCUBarriers_d, numIters, NUM_LDST, NUM_CU,
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelAtomicTreeBarrierUniqLocalExch), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelAtomicTreeBarrierUniqLocalExch"),
+        storage_d, gpuLockData, perCUBarriers_d, numIters, NUM_LDST, NUM_CU,
         MAX_WGS);
 
     // Blocks until the device has completed all preceding requested
@@ -883,8 +1025,8 @@ void invokeFBSTreeBarrier(float * storage_d, unsigned int * perCUBarriers_d,
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelFBSTreeBarrierUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        storage_d, cpuLockData, perCUBarriers_d, numIters, NUM_LDST, NUM_CU,
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelFBSTreeBarrierUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelFBSTreeBarrierUniq"),
+        storage_d, gpuLockData, perCUBarriers_d, numIters, NUM_LDST, NUM_CU,
         MAX_WGS);
 
     // Blocks until the device has completed all preceding requested
@@ -903,8 +1045,8 @@ void invokeFBSTreeBarrierLocalExch(float * storage_d,
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelFBSTreeBarrierUniqLocalExch), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        storage_d, cpuLockData, perCUBarriers_d, numIters, NUM_LDST, NUM_CU,
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelFBSTreeBarrierUniqLocalExch), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelFBSTreeBarrierUniqLocalExch"),
+        storage_d, gpuLockData, perCUBarriers_d, numIters, NUM_LDST, NUM_CU,
         MAX_WGS);
 
     // Blocks until the device has completed all preceding requested
@@ -921,8 +1063,8 @@ void invokeSpinLockMutex(hipMutex_t mutex, float * storage_d, int numIters)
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSpinLockMutex), dim3(1, 1, 1), dim3(NUM_WIS_PER_WG), 0, 0,
-        mutex, storage_d, cpuLockData, numIters, NUM_LDST, NUM_CU);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSpinLockMutex), dim3(1, 1, 1), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelSpinLockMutex"),
+        mutex, storage_d, gpuLockData, numIters, NUM_LDST, NUM_CU);
 
     // Blocks until the device has completed all preceding requested
     // tasks (make sure that the device returned before continuing).
@@ -939,8 +1081,8 @@ void invokeSpinLockMutex_uniq(hipMutex_t mutex, float * storage_d,
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSpinLockMutexUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        mutex, storage_d, cpuLockData, numIters, NUM_LDST, NUM_CU);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSpinLockMutexUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelSpinLockMutexUniq"),
+        mutex, storage_d, gpuLockData, numIters, NUM_LDST, NUM_CU);
 
     // Blocks until the device has completed all preceding requested
     // tasks (make sure that the device returned before continuing).
@@ -956,8 +1098,8 @@ void invokeEBOMutex(hipMutex_t mutex, float * storage_d, int numIters)
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelEBOMutex), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        mutex, storage_d, cpuLockData, numIters, NUM_LDST, NUM_CU);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelEBOMutex), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelEBOMutex"),
+        mutex, storage_d, gpuLockData, numIters, NUM_LDST, NUM_CU);
 
     // Blocks until the device has completed all preceding requested
     // tasks (make sure that the device returned before continuing).
@@ -973,8 +1115,8 @@ void invokeEBOMutex_uniq(hipMutex_t mutex, float * storage_d, int numIters)
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelEBOMutexUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        mutex, storage_d, cpuLockData, numIters, NUM_LDST, NUM_CU);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelEBOMutexUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelEBOMutexUniq"),
+        mutex, storage_d, gpuLockData, numIters, NUM_LDST, NUM_CU);
 
     // Blocks until the device has completed all preceding requested
     // tasks (make sure that the device returned before continuing).
@@ -990,8 +1132,8 @@ void invokeSleepingMutex(hipMutex_t mutex, float * storage_d, int numIters)
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSleepingMutex), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-                       mutex, storage_d, cpuLockData, numIters, NUM_LDST, NUM_CU);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSleepingMutex), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelSleepingMutex"),
+                       mutex, storage_d, gpuLockData, numIters, NUM_LDST, NUM_CU);
 
     // Blocks until the device has completed all preceding requested
     // tasks (make sure that the device returned before continuing).
@@ -1008,8 +1150,8 @@ void invokeSleepingMutex_uniq(hipMutex_t mutex, float * storage_d,
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSleepingMutexUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        mutex, storage_d, cpuLockData, numIters, NUM_LDST, NUM_CU);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSleepingMutexUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelSleepingMutexUniq"),
+        mutex, storage_d, gpuLockData, numIters, NUM_LDST, NUM_CU);
 
     // Blocks until the device has completed all preceding requested
     // tasks (make sure that the device returned before continuing).
@@ -1025,8 +1167,8 @@ void invokeFetchAndAddMutex(hipMutex_t mutex, float * storage_d, int numIters)
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelFetchAndAddMutex), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        mutex, storage_d, cpuLockData, numIters, NUM_LDST, NUM_CU);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelFetchAndAddMutex), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelFetchAndAddMutex"),
+        mutex, storage_d, gpuLockData, numIters, NUM_LDST, NUM_CU);
 
     // Blocks until the device has completed all preceding requested
     // tasks (make sure that the device returned before continuing).
@@ -1042,8 +1184,8 @@ void invokeFetchAndAddMutex_uniq(hipMutex_t mutex, float * storage_d, int numIte
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelFetchAndAddMutexUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        mutex, storage_d, cpuLockData, numIters, NUM_LDST, NUM_CU);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelFetchAndAddMutexUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelFetchAndAddMutexUniq"),
+        mutex, storage_d, gpuLockData, numIters, NUM_LDST, NUM_CU);
 
     // Blocks until the device has completed all preceding requested
     // tasks (make sure that the device returned before continuing).
@@ -1061,8 +1203,8 @@ void invokeSpinLockSemaphore(hipSemaphore_t sem, float * storage_d,
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSpinLockSemaphore), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        sem, storage_d, cpuLockData, numStorageLocs, numIters, NUM_LDST,
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSpinLockSemaphore), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelSpinLockSemaphore"),
+        sem, storage_d, gpuLockData, numStorageLocs, numIters, NUM_LDST,
         NUM_CU);
 
     // Blocks until the device has completed all preceding requested
@@ -1080,8 +1222,8 @@ void invokeSpinLockSemaphore_uniq(hipSemaphore_t sem, float * storage_d,
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSpinLockSemaphoreUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        sem, storage_d, cpuLockData, numIters, NUM_LDST, NUM_CU);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelSpinLockSemaphoreUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelSpinLockSemaphoreUniq"),
+        sem, storage_d, gpuLockData, numIters, NUM_LDST, NUM_CU);
 
     // Blocks until the device has completed all preceding requested
     // tasks (make sure that the device returned before continuing).
@@ -1098,8 +1240,8 @@ void invokeEBOSemaphore(hipSemaphore_t sem, float * storage_d, const int maxVal,
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelEBOSemaphore), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        sem, storage_d, cpuLockData, numStorageLocs, numIters, NUM_LDST,
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelEBOSemaphore), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelEBOSemaphore"),
+        sem, storage_d, gpuLockData, numStorageLocs, numIters, NUM_LDST,
         NUM_CU);
 
     // Blocks until the device has completed all preceding requested
@@ -1117,8 +1259,8 @@ void invokeEBOSemaphore_uniq(hipSemaphore_t sem, float * storage_d,
 
   for (int repeat = 0; repeat < NUM_REPEATS; ++repeat)
   {
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelEBOSemaphoreUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0,
-        sem, storage_d, cpuLockData, numIters, NUM_LDST, NUM_CU);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(kernelEBOSemaphoreUniq), dim3(WGs), dim3(NUM_WIS_PER_WG), 0, 0, kt.next("kernelEBOSemaphoreUniq"),
+        sem, storage_d, gpuLockData, numIters, NUM_LDST, NUM_CU);
 
     // Blocks until the device has completed all preceding requested
     // tasks (make sure that the device returned before continuing).
@@ -1188,14 +1330,16 @@ int main(int argc, char ** argv)
     exit(-1);
   }
 
-  NUM_CU = deviceProp.multiProcessorCount;
-  const int maxWGPerCU = deviceProp.maxThreadsPerBlock/NUM_WIS_PER_WG;
-  //assert(maxWGPerCU * NUM_WIS_PER_WG <=
-  //       deviceProp.maxThreadsPerMultiProcessor);
-  MAX_WGS = maxWGPerCU * NUM_CU;
+  // NUM_CU and MAX_WGS are one XCD's (XCD_* above), not the device's
+  const int maxWGPerCU = XCD_MAX_WGS_PER_CU;
+  if (deviceProp.multiProcessorCount != XCD_NUM_CU ||
+      deviceProp.maxThreadsPerBlock != XCD_MAX_WIS_PER_WG)
+    fprintf(stderr, "warning: device has %d CUs and %d threads/WG; using one XCD's "
+            "%d and %d\n", deviceProp.multiProcessorCount,
+            deviceProp.maxThreadsPerBlock, XCD_NUM_CU, XCD_MAX_WIS_PER_WG);
 
   fprintf(stdout, "# CU: %d, Max Thrs/WG: %d, Max WG/CU: %d, Max # WG: %d\n",
-          NUM_CU, deviceProp.maxThreadsPerBlock, maxWGPerCU, MAX_WGS);
+          NUM_CU, XCD_MAX_WIS_PER_WG, maxWGPerCU, MAX_WGS);
 
   hipError_t hipErr = hipGetLastError();
   checkError(hipErr, "Begin");
@@ -1270,7 +1414,7 @@ int main(int argc, char ** argv)
     requirements so we can reuse the same locations.
   */
   unsigned int * perCUBarriers;
-  hipHostMalloc(&perCUBarriers, sizeof(unsigned int) * (NUM_CU * MAX_WGS * 2));
+  hipMalloc(&perCUBarriers, sizeof(unsigned int) * (NUM_CU * MAX_WGS * 2));
 
   int numLocsMult = 0;
   // barriers and unique semaphores have numWGs WGs accessing unique locations
@@ -1300,14 +1444,17 @@ int main(int argc, char ** argv)
   int numStorageLocs = (numLocsMult * numUniqLocsAccPerWG);
   assert(numStorageLocs > 0);
   float * storage;
-  hipHostMalloc(&storage, sizeof(float) * numStorageLocs);
+  float * storage_h = (float *)malloc(sizeof(float) * numStorageLocs);
+  hipMalloc(&storage, sizeof(float) * numStorageLocs);
 
   fprintf(stdout, "# WGs: %d, # Ld/St: %d, # Locs Mult: %d, # Uniq Locs/WG: %d, # Storage Locs: %d\n", numWGs, NUM_LDST, numLocsMult, numUniqLocsAccPerWG, numStorageLocs);
 
   // initialize storage
-  for (int i = 0; i < numStorageLocs; ++i) { storage[i] = i; }
+  for (int i = 0; i < numStorageLocs; ++i) { storage_h[i] = i; }
+  hipMemcpy(storage, storage_h, sizeof(float) * numStorageLocs,
+            hipMemcpyHostToDevice);
   // initialize per-CU barriers to 0's
-  for (int i = 0; i < (NUM_CU * MAX_WGS * 2); ++i) { perCUBarriers[i] = 0; }
+  hipMemset(perCUBarriers, 0, sizeof(unsigned int) * (NUM_CU * MAX_WGS * 2));
 
   // lock variables
   hipMutex_t spinMutex, faMutex, sleepMutex, eboMutex;
@@ -1465,6 +1612,7 @@ int main(int argc, char ** argv)
     assert(MAX_WGS <= cpuLockData->maxBufferSize);
   }
 
+  kt.init();
   // NOTE: region of interest begins here
   hipDeviceSynchronize();
 
@@ -1584,6 +1732,11 @@ int main(int argc, char ** argv)
 
   // NOTE: Can end simulation here if don't care about output checking
   hipDeviceSynchronize();
+  kt.report();
+
+  // copy the GPU results back to the host
+  hipMemcpy(storage_h, storage, sizeof(float) * numStorageLocs,
+            hipMemcpyDeviceToHost);
 
   // get golden results
   float storageGolden[numStorageLocs];
@@ -1748,10 +1901,10 @@ int main(int argc, char ** argv)
   // check the output values
   for (int i = 0; i < numStorageLocs; ++i)
   {
-    if (std::abs(storage[i] - storageGolden[i]) > 1E-5)
+    if (std::abs(storage_h[i] - storageGolden[i]) > 1E-5)
     {
       fprintf(stderr, "\tERROR: storage[%d] = %f, golden[%d] = %f\n", i,
-              storage[i], i, storageGolden[i]);
+              storage_h[i], i, storageGolden[i]);
       ++numErrors;
     }
   }
@@ -1765,8 +1918,9 @@ int main(int argc, char ** argv)
 
   // free arrays
   hipLocksDestroy();
-  hipHostFree(storage);
-  hipHostFree(perCUBarriers);
+  hipFree(storage);
+  hipFree(perCUBarriers);
+  free(storage_h);
 
   return 0;
 }

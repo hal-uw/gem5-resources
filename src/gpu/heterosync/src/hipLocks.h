@@ -74,7 +74,10 @@ typedef struct hipLockData
 typedef unsigned int hipMutex_t;
 typedef unsigned int hipSemaphore_t;
 
+// host copy of the lock data (holds device pointers)
 static hipLockData_t * cpuLockData;
+// device copy of the lock data, passed to kernels
+static hipLockData_t * gpuLockData;
 
 hipError_t hipLocksInit(const int maxBlocksPerKernel, const int numMutexes,
                         const int numSemaphores, const bool pageAlign,
