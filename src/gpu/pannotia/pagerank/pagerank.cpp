@@ -164,6 +164,8 @@ int main(int argc, char **argv)
 
 //    double timer1 = gettime();
 
+    kt.init();
+
 
     // Copy the data to the device-side buffers
     err = hipMemcpy(row_d, csr->row_array, num_nodes * sizeof(int), hipMemcpyHostToDevice);
@@ -188,7 +190,7 @@ int main(int argc, char **argv)
 //    double timer3 = gettime();
 
     // Launch the initialization kernel
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(inibuffer), dim3(grid), dim3(threads), 0, 0, row_d, pagerank1_d, pagerank2_d, num_nodes,
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(inibuffer), dim3(grid), dim3(threads), 0, 0, kt.next("inibuffer"), row_d, pagerank1_d, pagerank2_d, num_nodes,
                                   num_edges);
     hipDeviceSynchronize();
     err = hipGetLastError();
@@ -209,11 +211,11 @@ int main(int argc, char **argv)
     // Run PageRank for some iter. TO: convergence determination
     for (int i = 0; i < ITER; i++) {
         // Launch pagerank kernel 1
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(pagerank1), dim3(grid), dim3(threads), 0, 0, row_d, col_d, data_d, pagerank1_d,
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(pagerank1), dim3(grid), dim3(threads), 0, 0, kt.next("pagerank1"), row_d, col_d, data_d, pagerank1_d,
                                       pagerank2_d, num_nodes, num_edges);
 
         // Launch pagerank kernel 2
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(pagerank2), dim3(grid), dim3(threads), 0, 0, row_d, col_d, data_d, pagerank1_d,
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(pagerank2), dim3(grid), dim3(threads), 0, 0, kt.next("pagerank2"), row_d, col_d, data_d, pagerank1_d,
                                       pagerank2_d, num_nodes, num_edges);
     }
     hipDeviceSynchronize();
@@ -242,6 +244,8 @@ int main(int argc, char **argv)
     m5_work_end_addr(0, 0);
     unmap_m5_mem();
 #endif
+
+    kt.report();
 
 //    double timer2 = gettime();
 

@@ -192,6 +192,8 @@ int main(int argc, char **argv)
 
 //    double time1 = gettime();
 
+    kt.init();
+
     // Copy data to device-side buffers
     err = hipMemcpy(row_d, csr->row_array, num_nodes * sizeof(int), hipMemcpyHostToDevice);
     if (err != hipSuccess) {
@@ -219,7 +221,7 @@ int main(int argc, char **argv)
     dim3 grid(num_blocks, 1, 1);
 
     // Launch the initialization kernel
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(init), dim3(grid), dim3(threads), 0, 0, s_array_d, c_array_d, c_array_u_d,
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(init), dim3(grid), dim3(threads), 0, 0, kt.next("init"), s_array_d, c_array_d, c_array_u_d,
                              num_nodes, num_edges);
     hipDeviceSynchronize();
     err = hipGetLastError();
@@ -253,17 +255,17 @@ int main(int argc, char **argv)
         }
 
         // Launch mis1
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(mis1), dim3(grid), dim3(threads), 0, 0, row_d, col_d, node_value_d, s_array_d,
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(mis1), dim3(grid), dim3(threads), 0, 0, kt.next("mis1"), row_d, col_d, node_value_d, s_array_d,
                                  c_array_d, min_array_d, stop_d, num_nodes,
                                  num_edges);
 
         // Launch mis2
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(mis2), dim3(grid), dim3(threads), 0, 0, row_d, col_d, node_value_d, s_array_d,
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(mis2), dim3(grid), dim3(threads), 0, 0, kt.next("mis2"), row_d, col_d, node_value_d, s_array_d,
                                  c_array_d, c_array_u_d, min_array_d, num_nodes,
                                  num_edges);
 
         // Launch mis3
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(mis3), dim3(grid), dim3(threads), 0, 0, c_array_u_d, c_array_d, num_nodes);
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(mis3), dim3(grid), dim3(threads), 0, 0, kt.next("mis3"), c_array_u_d, c_array_d, num_nodes);
 
         // Copy the termination variable back
         err = hipMemcpy(&stop, stop_d, sizeof(int), hipMemcpyDeviceToHost);
@@ -293,6 +295,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "ERROR: hipMemcpy s_array_d failed (%s)\n", hipGetErrorString(err));
         return -1;
     }
+
+    kt.report();
 
 //    double time2 = gettime();
 

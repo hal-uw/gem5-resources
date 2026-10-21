@@ -60,6 +60,7 @@
 #define KERNEL_SPMV_H
 
 #include "hip/hip_runtime.h"
+#include "../graph_parser/kernel_timer.h"
 
 /**
  * @brief   inibuffer
@@ -68,8 +69,9 @@
  * @param   num_nodes    number of vertices
  */
 __global__ void
-inibuffer(float *page_rank1, float *page_rank2, const int num_nodes)
+inibuffer(unsigned long long *kt, float *page_rank1, float *page_rank2, const int num_nodes)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
     // Initialize two pagerank arrays
@@ -77,6 +79,8 @@ inibuffer(float *page_rank1, float *page_rank2, const int num_nodes)
         page_rank1[tid] = 1 / (float)num_nodes;
         page_rank2[tid] = 0.0f;
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -89,9 +93,10 @@ inibuffer(float *page_rank1, float *page_rank2, const int num_nodes)
  * @param   num_edges  number of edges
  */
 __global__ void
-inicsr(int *row, int *col, float *data, int *col_cnt, int num_nodes,
+inicsr(unsigned long long *kt, int *row, int *col, float *data, int *col_cnt, int num_nodes,
        int num_edges)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
     if (tid < num_nodes) {
@@ -112,6 +117,8 @@ inicsr(int *row, int *col, float *data, int *col_cnt, int num_nodes,
             data[edge] = 1.0 / (float)col_cnt[nid];
         }
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -124,9 +131,10 @@ inicsr(int *row, int *col, float *data, int *col_cnt, int num_nodes,
  * @param   y          output vector
  */
 __global__ void
-spmv_csr_scalar_kernel(const int num_nodes, int *row, int *col, float *data,
+spmv_csr_scalar_kernel(unsigned long long *kt, const int num_nodes, int *row, int *col, float *data,
                        float *x, float *y)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
     if (tid < num_nodes) {
@@ -140,6 +148,8 @@ spmv_csr_scalar_kernel(const int num_nodes, int *row, int *col, float *data,
         }
         y[tid] += sum;
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -149,8 +159,9 @@ spmv_csr_scalar_kernel(const int num_nodes, int *row, int *col, float *data,
  * @param   num_nodes    number of vertices
  */
 __global__ void
-pagerank2(float *page_rank1, float *page_rank2, const int num_nodes)
+pagerank2(unsigned long long *kt, float *page_rank1, float *page_rank2, const int num_nodes)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
     // Update pagerank value with damping factor
@@ -158,6 +169,8 @@ pagerank2(float *page_rank1, float *page_rank2, const int num_nodes)
         page_rank1[tid]	= 0.15f / (float)num_nodes + 0.85f * page_rank2[tid];
         page_rank2[tid] = 0.0f;
     }
+
+    KT_END(kt);
 }
 
 #endif // KERNEL_SPMV_H

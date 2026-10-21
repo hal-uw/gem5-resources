@@ -60,6 +60,7 @@
 #define KERNEL_H
 
 #include "hip/hip_runtime.h"
+#include "../graph_parser/kernel_timer.h"
 
 #define BIGNUM 99999999
 
@@ -72,8 +73,9 @@
 * @param num_edges number of edges
 */
 __global__ void
-init(int *s_array, int *c_array, int *cu_array, int num_nodes, int num_edges)
+init(unsigned long long *kt, int *s_array, int *c_array, int *cu_array, int num_nodes, int num_edges)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
     if (tid < num_nodes) {
@@ -82,6 +84,8 @@ init(int *s_array, int *c_array, int *cu_array, int num_nodes, int num_edges)
         cu_array[tid] = -1;
         s_array[tid] = 0;
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -97,9 +101,10 @@ init(int *s_array, int *c_array, int *cu_array, int num_nodes, int num_edges)
 * @param num_edges    number of edges
 */
 __global__ void
-mis1(int *row, int *col, int *node_value, int *s_array, int *c_array,
+mis1(unsigned long long *kt, int *row, int *col, int *node_value, int *s_array, int *c_array,
      int *min_array, int *stop, int num_nodes, int num_edges)
 {
+    KT_BEGIN();
     // Get workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
     if (tid < num_nodes) {
@@ -127,6 +132,8 @@ mis1(int *row, int *col, int *node_value, int *s_array, int *c_array,
             min_array[tid] = min;
         }
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -142,9 +149,10 @@ mis1(int *row, int *col, int *node_value, int *s_array, int *c_array,
 * @param num_edges    number of edges
 */
 __global__ void
-mis2(int *row, int *col, int *node_value, int *s_array, int *c_array,
+mis2(unsigned long long *kt, int *row, int *col, int *node_value, int *s_array, int *c_array,
      int *cu_array, int *min_array, int num_nodes, int num_edges)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
@@ -176,6 +184,8 @@ mis2(int *row, int *col, int *node_value, int *s_array, int *c_array,
             }
         }
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -185,8 +195,9 @@ mis2(int *row, int *col, int *node_value, int *s_array, int *c_array,
 * @param num_nodes    number of vertices
 */
 __global__ void
-mis3(int *cu_array, int *c_array, int num_nodes)
+mis3(unsigned long long *kt, int *cu_array, int *c_array, int num_nodes)
 {
+    KT_BEGIN();
     //get my workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
@@ -194,6 +205,8 @@ mis3(int *cu_array, int *c_array, int num_nodes)
     if (tid < num_nodes && cu_array[tid] == -2) {
         c_array[tid] = cu_array[tid];
     }
+
+    KT_END(kt);
 }
 
 #endif // KERNEL_H

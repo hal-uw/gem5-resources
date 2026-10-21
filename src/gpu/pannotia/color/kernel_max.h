@@ -60,6 +60,7 @@
 #define KERNEL_MAX_H
 
 #include "hip/hip_runtime.h"
+#include "../graph_parser/kernel_timer.h"
 
 /**
  * @brief   color kernel 1
@@ -73,10 +74,11 @@
  * @param   num_nodes   Number of vertices
  * @param   num_edges   Number of edges
  */
-__global__ void color1(int *row, int *col, int *node_value, int *color_array,
+__global__ void color1(unsigned long long *kt, int *row, int *col, int *node_value, int *color_array,
                        int *stop, int *max_d, const int color,
                        const int num_nodes, const int num_edges)
 {
+    KT_BEGIN();
     // Get my thread workitem id
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
@@ -106,6 +108,8 @@ __global__ void color1(int *row, int *col, int *node_value, int *color_array,
             max_d[tid] = maximum;
         }
     }
+
+    KT_END(kt);
 }
 
 
@@ -118,10 +122,11 @@ __global__ void color1(int *row, int *col, int *node_value, int *color_array,
  * @param   num_nodes   Number of vertices
  * @param   num_edges   Number of edges
  */
-__global__ void color2(int *node_value, int *color_array, int *max_d,
+__global__ void color2(unsigned long long *kt, int *node_value, int *color_array, int *max_d,
                        const int color, const int num_nodes,
                        const int num_edges)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
@@ -134,6 +139,7 @@ __global__ void color2(int *node_value, int *color_array, int *max_d,
         }
     }
 
+    KT_END(kt);
 }
 
 #endif // KERNEL_MAX_H

@@ -80,7 +80,7 @@
 #define MAX_ITERS 150
 #else
 #include <stdint.h>
-#define MAX_ITERS INT32_MAX
+#define MAX_ITERS 150
 #endif
 
 void print_vector(int *vector, int num);
@@ -173,6 +173,8 @@ int main(int argc, char **argv)
 
     //timer1 = gettime();
 
+    kt.init();
+
     // Copy data to device-side buffers
     err = hipMemcpy(row_d, csr->row_array, (num_nodes + 1) * sizeof(int), hipMemcpyHostToDevice);
     if (err != hipSuccess) {
@@ -208,7 +210,7 @@ int main(int argc, char **argv)
     dim3 grid(num_blocks, 1, 1);
 
     // Initialization
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(clean_bc), dim3(grid), dim3(threads ), 0, 0, bc_d, num_nodes);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(clean_bc), dim3(grid), dim3(threads ), 0, 0, kt.next("clean_bc"), bc_d, num_nodes);
 
     start_timer(&kernel1);
 #ifdef GEM5_FUSION
@@ -222,7 +224,7 @@ int main(int argc, char **argv)
 #endif
     // Main computation loop
     for (int i = 0; i < num_nodes && i < MAX_ITERS; i++) {
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(clean_1d_array), dim3(grid), dim3(threads ), 0, 0, i, dist_d, sigma_d, rho_d,
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(clean_1d_array), dim3(grid), dim3(threads ), 0, 0, kt.next("clean_1d_array"), i, dist_d, sigma_d, rho_d,
                                             num_nodes);
 
         // Depth of the traversal
@@ -237,7 +239,7 @@ int main(int argc, char **argv)
             // Copy the termination variable to the device
             hipMemcpy(stop_d, &stop, sizeof(int), hipMemcpyHostToDevice);
 
-            hipLaunchKernelGGL(HIP_KERNEL_NAME(bfs_kernel), dim3(grid), dim3(threads ), 0, 0, row_d, col_d, dist_d, rho_d, stop_d,
+            hipLaunchKernelGGL(HIP_KERNEL_NAME(bfs_kernel), dim3(grid), dim3(threads ), 0, 0, kt.next("bfs_kernel"), row_d, col_d, dist_d, rho_d, stop_d,
                                             num_nodes, num_edges, dist);
 
             // Copy back the termination variable from the device
@@ -252,7 +254,7 @@ int main(int argc, char **argv)
 
         // Traverse back from the deepest part of the tree
         while (dist) {
-            hipLaunchKernelGGL(HIP_KERNEL_NAME(backtrack_kernel), dim3(grid), dim3(threads ), 0, 0, row_trans_d, col_trans_d,
+            hipLaunchKernelGGL(HIP_KERNEL_NAME(backtrack_kernel), dim3(grid), dim3(threads ), 0, 0, kt.next("backtrack_kernel"), row_trans_d, col_trans_d,
                                                 dist_d, rho_d, sigma_d,
                                                 num_nodes, num_edges, dist, i,
                                                 bc_d);
@@ -281,6 +283,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "ERROR: read buffer bc_d (%s)\n", hipGetErrorString(err));
         return -1;
     }
+
+    kt.report();
 
     //timer2 = gettime();
 

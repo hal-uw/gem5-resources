@@ -1,7 +1,7 @@
 EXECUTABLE = mis_hip.gem5
 OPTS = -O3
 
-HIP_PATH ?= /opt/rocm/hip
+HIP_PATH ?= /opt/rocm
 HIPCC = $(HIP_PATH)/bin/hipcc
 
 # these are needed for m5ops
@@ -15,7 +15,7 @@ BIN_DIR ?= ./bin
 all: $(BIN_DIR)/$(EXECUTABLE)
 
 $(BIN_DIR)/$(EXECUTABLE): mis.cpp ../graph_parser/parse.cpp ../graph_parser/util.cpp $(BIN_DIR)
-	$(HIPCC) $(OPTS) --amdgpu-target=gfx900,gfx902 $(CXXFLAGS) mis.cpp ../graph_parser/parse.cpp ../graph_parser/util.cpp -DGEM5_FUSION -o $(BIN_DIR)/$(EXECUTABLE) $(CFLAGS) $(LDFLAGS)
+	$(HIPCC) $(OPTS) --amdgpu-target=gfx942 $(CXXFLAGS) mis.cpp ../graph_parser/parse.cpp ../graph_parser/util.cpp -DGEM5_FUSION -o $(BIN_DIR)/$(EXECUTABLE) $(CFLAGS) $(LDFLAGS)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

@@ -182,6 +182,8 @@ int main(int argc, char **argv)
     // Copy data to device-side buffers
     double timer1 = gettime();
 
+    kt.init();
+
     err = hipMemcpy(color_d, color, num_nodes * sizeof(int), hipMemcpyHostToDevice);
     if (err != hipSuccess) {
         fprintf(stderr, "ERROR: hipMemcpy color_d (size:%d) => %s\n", num_nodes, hipGetErrorString(err));
@@ -217,7 +219,7 @@ int main(int argc, char **argv)
     int graph_color = 1;
 
     // Initialize arrays
-    hipLaunchKernelGGL(ini, dim3(grid), dim3(threads ), 0, 0, max_d, min_d, num_nodes);
+    hipLaunchKernelGGL(ini, dim3(grid), dim3(threads ), 0, 0, kt.next("ini"), max_d, min_d, num_nodes);
 
     // Main computation loop
     double timer3 = gettime();
@@ -244,12 +246,12 @@ int main(int argc, char **argv)
         }
 
         // Launch the color kernel 1
-        hipLaunchKernelGGL(color1, dim3(grid), dim3(threads ), 0, 0, row_d, col_d, node_value_d, color_d,
+        hipLaunchKernelGGL(color1, dim3(grid), dim3(threads ), 0, 0, kt.next("color1"), row_d, col_d, node_value_d, color_d,
                                      stop_d, max_d, min_d, graph_color,
                                      num_nodes, num_edges);
 
         // Launch the color kernel 2
-        hipLaunchKernelGGL(color2, dim3(grid), dim3(threads ), 0, 0, node_value_d, color_d, max_d, min_d,
+        hipLaunchKernelGGL(color2, dim3(grid), dim3(threads ), 0, 0, kt.next("color2"), node_value_d, color_d, max_d, min_d,
                                      graph_color, num_nodes, num_edges);
 
         err = hipMemcpy(&stop, stop_d, sizeof(int), hipMemcpyDeviceToHost);
@@ -282,6 +284,8 @@ int main(int argc, char **argv)
         printf("ERROR: hipMemcpy(): %s\n", hipGetErrorString(err));
         return -1;
     }
+
+    kt.report();
 
     double timer2 = gettime();
 

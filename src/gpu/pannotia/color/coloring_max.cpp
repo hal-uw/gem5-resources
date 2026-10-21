@@ -176,6 +176,8 @@ int main(int argc, char **argv)
     // Copy data to device-side buffers
 //    double timer1 = gettime();
 
+    kt.init();
+
 
     err = hipMemcpy(color_d, color, num_nodes * sizeof(int), hipMemcpyHostToDevice);
     if (err != hipSuccess) {
@@ -242,12 +244,12 @@ int main(int argc, char **argv)
         }
 
         // Launch the color kernel 1
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(color1), dim3(grid), dim3(threads ), 0, 0, row_d, col_d, node_value_d, color_d,
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(color1), dim3(grid), dim3(threads ), 0, 0, kt.next("color1"), row_d, col_d, node_value_d, color_d,
                                      stop_d, max_d, graph_color, num_nodes,
                                      num_edges);
 
         // Launch the color kernel 2
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(color2), dim3(grid), dim3(threads ), 0, 0, node_value_d, color_d, max_d, graph_color,
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(color2), dim3(grid), dim3(threads ), 0, 0, kt.next("color2"), node_value_d, color_d, max_d, graph_color,
                                      num_nodes, num_edges);
 
         err = hipMemcpy(&stop, stop_d, sizeof(int), hipMemcpyDeviceToHost);
@@ -279,6 +281,8 @@ int main(int argc, char **argv)
         printf("ERROR: hipMemcpy(): %s\n", hipGetErrorString(err));
         return -1;
     }
+
+    kt.report();
 
 //    double timer2 = gettime();
 

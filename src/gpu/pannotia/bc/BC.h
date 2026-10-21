@@ -110,7 +110,7 @@ csr_array * parseCOO(char* tmpchar, int *p_num_nodes, int *p_num_edges, bool dir
     int cnt = 0;
     int cnt1 = 0;
     unsigned int lineno = 0;
-    char sp[2], a, p;
+    char sp[8], a, p;
     char * line = (char *)malloc(8192 * sizeof(char));
     int num_nodes = 0, num_edges = 0;
 
@@ -133,7 +133,7 @@ csr_array * parseCOO(char* tmpchar, int *p_num_nodes, int *p_num_edges, bool dir
         case 'c':
             break;
         case 'p':
-            sscanf(line, "%c %s %d %d", &p, sp, p_num_nodes, p_num_edges);
+            sscanf(line, "%c %7s %d %d", &p, sp, p_num_nodes, p_num_edges);
 
             if (!directed) {
                 *p_num_edges = *p_num_edges * 2;

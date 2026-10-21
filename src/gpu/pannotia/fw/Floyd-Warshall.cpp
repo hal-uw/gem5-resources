@@ -87,7 +87,7 @@
 #define MAX_ITERS 192
 #else
 #include <stdint.h>
-#define MAX_ITERS INT32_MAX
+#define MAX_ITERS 192
 #endif
 #define ITERS 10
 #define BIGNUM 999999
@@ -239,18 +239,20 @@ int main(int argc, char **argv)
     int *next_d;
 
     // Create device-side FW buffers
-    err = hipMallocManaged(&dist_d, dim * dim * sizeof(int));
+    err = hipMalloc(&dist_d, dim * dim * sizeof(int));
     if (err != hipSuccess) {
         printf("ERROR: hipMalloc dist_d (size:%d) => %d\n",  dim * dim , err);
         return -1;
     }
-    err = hipMallocManaged(&next_d, dim * dim * sizeof(int));
+    err = hipMalloc(&next_d, dim * dim * sizeof(int));
     if (err != hipSuccess) {
         printf("ERROR: hipMalloc next_d (size:%d) => %d\n",  dim * dim , err);
         return -1;
     }
 
     //double timer1 = gettime();
+
+    kt.init();
 
 #ifdef GEM5_FS
     m5op_addr = 0xFFFF0000;
@@ -268,7 +270,7 @@ int main(int argc, char **argv)
     dim3 threads(16, 16, 1);
     dim3 grid(dim / 16, dim / 16, 1);
     //Warmup
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, dist_d, next_d, dim, 1);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, nullptr /* untimed warmup */, dist_d, next_d, dim, 1);
     hipDeviceSynchronize();
     //double timer3 = gettime();
     // Main computation loop
@@ -281,7 +283,7 @@ int main(int argc, char **argv)
 //    m5_work_begin_addr(0, 0);
 #endif
     for (int k = 2; k < dim && k < ITERS; k++) {
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, dist_d, next_d, dim, k);
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(floydwarshall), dim3(grid), dim3(threads), 0, 0, kt.next("floydwarshall"), dist_d, next_d, dim, k);
         hipDeviceSynchronize();
     }
     end_timer(&kernel1);
@@ -301,6 +303,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "ERROR:  read back dist_d %d failed\n", err);
         return -1;
     }
+
+    kt.report();
 
     //double timer2 = gettime();
 

@@ -235,7 +235,7 @@ csr_array *parseCOO(char* tmpchar, int *p_num_nodes, int *p_num_edges, bool dire
 {
     int cnt = 0;
     unsigned int lineno = 0;
-    char sp[2], a, p;
+    char sp[8], a, p;
     char *line = NULL;
     int num_nodes = 0, num_edges = 0;
     size_t len = 128;
@@ -257,7 +257,7 @@ csr_array *parseCOO(char* tmpchar, int *p_num_nodes, int *p_num_edges, bool dire
         case 'c':
             break;
         case 'p':
-            sscanf(line, "%c %s %d %d", &p, sp, p_num_nodes, p_num_edges);
+            sscanf(line, "%c %7s %d %d", &p, sp, p_num_nodes, p_num_edges);
 
             if (!directed) {
                 *p_num_edges = *p_num_edges * 2;
@@ -445,7 +445,7 @@ double_edges *parseCOO_doubleEdge(char* tmpchar, int *p_num_nodes, int *p_num_ed
 {
     int cnt = 0;
     unsigned int lineno = 0;
-    char sp[2], a, p;
+    char sp[8], a, p;
     char *line = NULL;
     int num_nodes = 0, num_edges = 0;
     size_t len = 128;
@@ -468,7 +468,7 @@ double_edges *parseCOO_doubleEdge(char* tmpchar, int *p_num_nodes, int *p_num_ed
         case 'c':
             break;
         case 'p':
-            sscanf(line, "%c %s %d %d", &p, sp, p_num_nodes, p_num_edges);
+            sscanf(line, "%c %7s %d %d", &p, sp, p_num_nodes, p_num_edges);
 
             if (!directed) {
                 *p_num_edges = *p_num_edges * 2;
@@ -792,7 +792,7 @@ csr_array *parseCOO_transpose(char* tmpchar, int *p_num_nodes, int *p_num_edges,
 {
     int cnt = 0;
     unsigned int lineno = 0;
-    char sp[2], a, p;
+    char sp[8], a, p;
     char *line = NULL;
     int num_nodes = 0, num_edges = 0;
     size_t len = 128;
@@ -817,7 +817,7 @@ csr_array *parseCOO_transpose(char* tmpchar, int *p_num_nodes, int *p_num_edges,
         case 'p':
             fflush(stdout);
 
-            sscanf(line, "%c %s %d %d", &p, sp, p_num_nodes, p_num_edges);
+            sscanf(line, "%c %7s %d %d", &p, sp, p_num_nodes, p_num_edges);
 
             if (!directed) {
                 *p_num_edges = *p_num_edges * 2;

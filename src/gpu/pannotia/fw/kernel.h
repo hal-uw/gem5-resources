@@ -60,6 +60,7 @@
 #define KERNEL_H
 
 #include "hip/hip_runtime.h"
+#include "../graph_parser/kernel_timer.h"
 
 /**
  * @brief   naive floyd warshal kernel
@@ -69,8 +70,9 @@
  * @param   k     Current iteration number
  */
 __global__ void
-floydwarshall(int *dist, int *next, int dim, int k)
+floydwarshall(unsigned long long *kt, int *dist, int *next, int dim, int k)
 {
+    KT_BEGIN();
     // Get my workitem id x_dim
     int i = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
     // Get my workitem id y_dim
@@ -83,6 +85,8 @@ floydwarshall(int *dist, int *next, int dim, int k)
             next[i * dim + j] = k;
         }
     }
+
+    KT_END(kt);
 }
 
 #endif // KERNEL_H

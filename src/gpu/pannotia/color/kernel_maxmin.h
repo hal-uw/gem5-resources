@@ -60,6 +60,7 @@
 #define KERNEL_MAXMIN_H
 
 #include "hip/hip_runtime.h"
+#include "../graph_parser/kernel_timer.h"
 
 #define BIG_NUM 999999
 
@@ -76,10 +77,11 @@
  * @param   num_nodes   Number of vertices
  * @param   num_edges   Number of edges
  */
-__global__ void color1(int *row, int *col, int *node_value, int *color_array,
+__global__ void color1(unsigned long long *kt, int *row, int *col, int *node_value, int *color_array,
                        int *stop, int *max_d, int *min_d, const int color,
                        const int num_nodes, const int num_edges)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -113,6 +115,8 @@ __global__ void color1(int *row, int *col, int *node_value, int *color_array,
             min_d[tid] = minimum;
         }
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -125,10 +129,11 @@ __global__ void color1(int *row, int *col, int *node_value, int *color_array,
  * @param   num_nodes   Number of vertices
  * @param   num_edges   Number of edges
  */
-__global__ void color2(int *node_value, int *color_array, int *max_d,
+__global__ void color2(unsigned long long *kt, int *node_value, int *color_array, int *max_d,
                        int *min_d, const int color, const int num_nodes,
                        const int num_edges)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -143,6 +148,7 @@ __global__ void color2(int *node_value, int *color_array, int *max_d,
         }
     }
 
+    KT_END(kt);
 }
 
 /**
@@ -151,8 +157,9 @@ __global__ void color2(int *node_value, int *color_array, int *max_d,
  * @param   min_d       Min array
  * @param   num_nodes   Number of vertices
  */
-__global__ void ini(int *max_d, int *min_d, const int num_nodes)
+__global__ void ini(unsigned long long *kt, int *max_d, int *min_d, const int num_nodes)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -162,6 +169,7 @@ __global__ void ini(int *max_d, int *min_d, const int num_nodes)
         min_d[tid] = BIG_NUM;
     }
 
+    KT_END(kt);
 }
 
 #endif

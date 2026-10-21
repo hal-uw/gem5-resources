@@ -167,6 +167,8 @@ int main(int argc, char **argv)
 
     //double timer1 = gettime();
 
+    kt.init();
+
     // Copy data to device side buffers
     err = hipMemcpy(row_d, csr->row_array, (num_nodes + 1) * sizeof(int), hipMemcpyHostToDevice);
     if (err != hipSuccess) {
@@ -199,7 +201,7 @@ int main(int argc, char **argv)
     int sourceVertex = 0;
 
     // Launch the initialization kernel
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(vector_init), dim3(grid), dim3(threads), 0, 0, vector_d1, vector_d2, sourceVertex, num_nodes);
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(vector_init), dim3(grid), dim3(threads), 0, 0, kt.next("vector_init"), vector_d1, vector_d2, sourceVertex, num_nodes);
     hipDeviceSynchronize();
     err = hipGetLastError();
     if (err != hipSuccess) {
@@ -233,15 +235,15 @@ int main(int argc, char **argv)
         }
 
         // Launch the assignment kernel
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(vector_assign), dim3(grid), dim3(threads), 0, 0, vector_d1, vector_d2, num_nodes);
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(vector_assign), dim3(grid), dim3(threads), 0, 0, kt.next("vector_assign"), vector_d1, vector_d2, num_nodes);
 
         // Launch the min.+ kernel
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(spmv_min_dot_plus_kernel), dim3(grid), dim3(threads), 0, 0, num_nodes, row_d, col_d,
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(spmv_min_dot_plus_kernel), dim3(grid), dim3(threads), 0, 0, kt.next("spmv_min_dot_plus_kernel"), num_nodes, row_d, col_d,
                                                      data_d, vector_d1,
                                                      vector_d2);
 
         // Launch the check kernel
-        hipLaunchKernelGGL(HIP_KERNEL_NAME(vector_diff), dim3(grid), dim3(threads), 0, 0, vector_d1, vector_d2,
+        hipLaunchKernelGGL(HIP_KERNEL_NAME(vector_diff), dim3(grid), dim3(threads), 0, 0, kt.next("vector_diff"), vector_d1, vector_d2,
                                         stop_d, num_nodes);
 
         // Read the termination variable back
@@ -275,6 +277,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "ERROR: read vector_d1 (%s)\n", hipGetErrorString(err));
         return -1;
     }
+
+    kt.report();
 
     //double timer2 = gettime();
 

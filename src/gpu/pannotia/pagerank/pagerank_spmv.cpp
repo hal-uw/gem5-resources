@@ -164,6 +164,8 @@ int main(int argc, char **argv)
 
     double timer1 = gettime();
 
+    kt.init();
+
 #ifdef GEM5_FS
     m5op_addr = 0xFFFF0000;
     map_m5_mem();
@@ -198,7 +200,7 @@ int main(int argc, char **argv)
     double timer3 = gettime();
 
     // Launch the initialization kernel
-    hipLaunchKernelGGL(inibuffer, dim3(grid), dim3(threads), 0, 0, pagerank1_d, pagerank2_d, num_nodes);
+    hipLaunchKernelGGL(inibuffer, dim3(grid), dim3(threads), 0, 0, kt.next("inibuffer"), pagerank1_d, pagerank2_d, num_nodes);
     hipDeviceSynchronize();
     err = hipGetLastError();
     if (err != hipSuccess) {
@@ -207,7 +209,7 @@ int main(int argc, char **argv)
     }
 
     // Initialize the CSR
-    hipLaunchKernelGGL(inicsr, dim3(grid), dim3(threads), 0, 0, row_d, col_d, data_d, col_cnt_d, num_nodes,
+    hipLaunchKernelGGL(inicsr, dim3(grid), dim3(threads), 0, 0, kt.next("inicsr"), row_d, col_d, data_d, col_cnt_d, num_nodes,
                                num_edges);
     hipDeviceSynchronize();
     err = hipGetLastError();
@@ -230,12 +232,12 @@ int main(int argc, char **argv)
     // Run PageRank for some iter. TO: convergence determination
     for (int i = 0; i < ITER; i++) {
         // Launch pagerank kernel 1
-        hipLaunchKernelGGL(spmv_csr_scalar_kernel, dim3(grid), dim3(threads), 0, 0, num_nodes, row_d, col_d,
+        hipLaunchKernelGGL(spmv_csr_scalar_kernel, dim3(grid), dim3(threads), 0, 0, kt.next("spmv_csr_scalar_kernel"), num_nodes, row_d, col_d,
                                                    data_d, pagerank1_d,
                                                    pagerank2_d);
 
         // Launch pagerank kernel 2
-        hipLaunchKernelGGL(pagerank2, dim3(grid), dim3(threads), 0, 0, pagerank1_d, pagerank2_d, num_nodes);
+        hipLaunchKernelGGL(pagerank2, dim3(grid), dim3(threads), 0, 0, kt.next("pagerank2"), pagerank1_d, pagerank2_d, num_nodes);
     }
     hipDeviceSynchronize();
     end_timer(&kernel1);
@@ -258,6 +260,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "ERROR: hipMemcpy() failed (%s)\n", hipGetErrorString(err));
         return -1;
     }
+
+    kt.report();
 
     double timer2 = gettime();
 

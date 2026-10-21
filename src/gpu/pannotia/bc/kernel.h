@@ -60,6 +60,7 @@
 #define KERNEL_H_
 
 #include "hip/hip_runtime.h"
+#include "../graph_parser/kernel_timer.h"
 
 /**
  * @brief   Breadth-first traversal
@@ -75,9 +76,10 @@
  */
 
 __global__ void
-bfs_kernel(int *row, int *col, int *d, float *rho, int *cont,
+bfs_kernel(unsigned long long *kt, int *row, int *col, int *d, float *rho, int *cont,
            const int num_nodes, const int num_edges, const int dist)
 {
+    KT_BEGIN();
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
     //navigate the current layer
@@ -107,6 +109,8 @@ bfs_kernel(int *row, int *col, int *d, float *rho, int *cont,
             }
         }
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -126,10 +130,11 @@ bfs_kernel(int *row, int *col, int *d, float *rho, int *cont,
  */
 
 __global__ void
-backtrack_kernel(int *row, int *col, int *d, float *rho, float *sigma,
+backtrack_kernel(unsigned long long *kt, int *row, int *col, int *d, float *rho, float *sigma,
                  const int num_nodes, const int num_edges, const int dist,
                  const int s, float* bc)
 {
+    KT_BEGIN();
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
     // Navigate the current layer
@@ -156,6 +161,7 @@ backtrack_kernel(int *row, int *col, int *d, float *rho, float *sigma,
             bc[tid] = bc[tid] + sigma[tid];
     }
 
+    KT_END(kt);
 }
 
 /**
@@ -169,9 +175,10 @@ backtrack_kernel(int *row, int *col, int *d, float *rho, float *sigma,
  * @param   num_edges Termination variable
  */
 __global__ void
-back_sum_kernel(const int s, const int dist, int *d, float *sigma, float *bc,
+back_sum_kernel(unsigned long long *kt, const int s, const int dist, int *d, float *sigma, float *bc,
                 const int num_nodes)
 {
+    KT_BEGIN();
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
     if (tid < num_nodes) {
@@ -180,6 +187,8 @@ back_sum_kernel(const int s, const int dist, int *d, float *sigma, float *bc,
             bc[tid] = bc[tid] + sigma[tid];
         }
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -191,9 +200,10 @@ back_sum_kernel(const int s, const int dist, int *d, float *sigma, float *bc,
  * @param   num_nodes Termination variable
  */
 __global__ void
-clean_1d_array(const int source, int *dist_array, float *sigma, float *rho,
+clean_1d_array(unsigned long long *kt, const int source, int *dist_array, float *sigma, float *rho,
                const int num_nodes)
 {
+    KT_BEGIN();
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
     if (tid < num_nodes) {
@@ -210,6 +220,8 @@ clean_1d_array(const int source, int *dist_array, float *sigma, float *rho,
             dist_array[tid] = -1;
         }
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -217,12 +229,15 @@ clean_1d_array(const int source, int *dist_array, float *sigma, float *rho,
  * @param   p           Dependency array
  * @param   num_nodes   Number of vertices
  */
-__global__ void clean_2d_array(int *p, const int num_nodes)
+__global__ void clean_2d_array(unsigned long long *kt, int *p, const int num_nodes)
 {
+    KT_BEGIN();
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
     if (tid < num_nodes * num_nodes)
         p[tid] = 0;
+
+    KT_END(kt);
 }
 
 /**
@@ -230,12 +245,15 @@ __global__ void clean_2d_array(int *p, const int num_nodes)
  * @param   bc_d        Betweeness Centrality array
  * @param   num_nodes   Number of vertices
  */
-__global__ void clean_bc(float *bc_d, const int num_nodes)
+__global__ void clean_bc(unsigned long long *kt, float *bc_d, const int num_nodes)
 {
+    KT_BEGIN();
     int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
 
     if (tid < num_nodes)
         bc_d[tid] = 0;
+
+    KT_END(kt);
 }
 
 #endif // KERNEL_H_

@@ -60,6 +60,7 @@
 #define KERNEL_H
 
 #include "hip/hip_runtime.h"
+#include "../graph_parser/kernel_timer.h"
 #define BIG_NUM 99999999
 
 /**
@@ -72,9 +73,10 @@
  * @param   y          Output vector
  */
 __global__ void
-spmv_min_dot_plus_kernel(const int num_rows, int *row, int *col, int *data,
+spmv_min_dot_plus_kernel(unsigned long long *kt, const int num_rows, int *row, int *col, int *data,
                          int *x, int *y)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
@@ -92,6 +94,8 @@ spmv_min_dot_plus_kernel(const int num_rows, int *row, int *col, int *data,
         }
         y[tid] = min;
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -104,9 +108,10 @@ spmv_min_dot_plus_kernel(const int num_rows, int *row, int *col, int *data,
  * @param   y          the output vector
  */
 __global__ void
-ell_min_dot_plus_kernel(const int num_nodes, const int height, int *col,
+ell_min_dot_plus_kernel(unsigned long long *kt, const int num_nodes, const int height, int *col,
                         int *data, int *x, int *y)
 {
+    KT_BEGIN();
     // Get workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
@@ -125,6 +130,8 @@ ell_min_dot_plus_kernel(const int num_nodes, const int height, int *col,
         }
         y[tid] = min;
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -135,8 +142,9 @@ ell_min_dot_plus_kernel(const int num_nodes, const int height, int *col,
  * @param   num_nodes    number of vertices
  */
 __global__ void
-vector_init(int *vector1, int *vector2, const int i, const int num_nodes)
+vector_init(unsigned long long *kt, int *vector1, int *vector2, const int i, const int num_nodes)
 {
+    KT_BEGIN();
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
     if (tid < num_nodes) {
@@ -150,6 +158,8 @@ vector_init(int *vector1, int *vector2, const int i, const int num_nodes)
             vector2[tid] = BIG_NUM;
         }
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -159,13 +169,16 @@ vector_init(int *vector1, int *vector2, const int i, const int num_nodes)
  * @param   num_nodes    number of vertices
  */
 __global__ void
-vector_assign(int *vector1, int *vector2, const int num_nodes)
+vector_assign(unsigned long long *kt, int *vector1, int *vector2, const int num_nodes)
 {
+    KT_BEGIN();
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
     if (tid < num_nodes) {
         vector1[tid] = vector2[tid];
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -176,8 +189,9 @@ vector_assign(int *vector1, int *vector2, const int num_nodes)
  * @param   num_nodes    number of vertices
  */
 __global__ void
-vector_diff(int *vector1, int *vector2, int *stop, const int num_nodes)
+vector_diff(unsigned long long *kt, int *vector1, int *vector2, int *stop, const int num_nodes)
 {
+    KT_BEGIN();
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
     if (tid < num_nodes) {
@@ -185,6 +199,8 @@ vector_diff(int *vector1, int *vector2, int *stop, const int num_nodes)
             *stop = 1;
         }
     }
+
+    KT_END(kt);
 }
 
 #endif // KERNEL_H

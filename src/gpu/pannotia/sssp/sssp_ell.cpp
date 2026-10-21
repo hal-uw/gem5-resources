@@ -168,6 +168,8 @@ int main(int argc, char **argv)
 
     double timer1 = gettime();
 
+    kt.init();
+
 #ifdef GEM5_FUSION
     m5_work_begin(0, 0);
 #endif
@@ -204,7 +206,7 @@ int main(int argc, char **argv)
     int sourceVertex = 0;
 
     // Launch the initialization kernel
-    hipLaunchKernelGGL(vector_init, dim3(grid), dim3(threads), 0, 0, vector_d1, vector_d2, sourceVertex, num_nodes);
+    hipLaunchKernelGGL(vector_init, dim3(grid), dim3(threads), 0, 0, kt.next("vector_init"), vector_d1, vector_d2, sourceVertex, num_nodes);
     hipDeviceSynchronize();
     err = hipGetLastError();
     if (err != hipSuccess) {
@@ -238,15 +240,15 @@ int main(int argc, char **argv)
         }
 
         // Launch the assignment kernel
-        hipLaunchKernelGGL(vector_assign, dim3(grid), dim3(threads), 0, 0, vector_d1, vector_d2, num_nodes);
+        hipLaunchKernelGGL(vector_assign, dim3(grid), dim3(threads), 0, 0, kt.next("vector_assign"), vector_d1, vector_d2, num_nodes);
 
         // Launch the min.+ kernel
-        hipLaunchKernelGGL(ell_min_dot_plus_kernel, dim3(grid), dim3(threads), 0, 0, num_nodes, height,
+        hipLaunchKernelGGL(ell_min_dot_plus_kernel, dim3(grid), dim3(threads), 0, 0, kt.next("ell_min_dot_plus_kernel"), num_nodes, height,
                                                     ell_col_d, ell_data_d,
                                                     vector_d1, vector_d2);
 
         // Launch the check kernel
-        hipLaunchKernelGGL(vector_diff, dim3(grid), dim3(threads), 0, 0, vector_d1, vector_d2,
+        hipLaunchKernelGGL(vector_diff, dim3(grid), dim3(threads), 0, 0, kt.next("vector_diff"), vector_d1, vector_d2,
                                         stop_d, num_nodes);
 
         // Read the termination variable back
@@ -282,6 +284,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "ERROR: read vector_d1 (%s)\n", hipGetErrorString(err));
         return -1;
     }
+
+    kt.report();
 
     double timer2 = gettime();
 

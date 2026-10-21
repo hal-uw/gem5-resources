@@ -60,6 +60,7 @@
 #define KERNEL_H
 
 #include "hip/hip_runtime.h"
+#include "../graph_parser/kernel_timer.h"
 
 /**
  * @brief   pagerank 1
@@ -72,9 +73,10 @@
  * @param   num_edges   number of edges
  */
 __global__ void
-pagerank1(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
+pagerank1(unsigned long long *kt, int *row, int *col, int *data, float *page_rank1, float *page_rank2,
           const int num_nodes, const int num_edges)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
@@ -96,6 +98,8 @@ pagerank1(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
             atomicAdd(&page_rank2[nid], page_rank1[tid] / (float)(end - start));
         }
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -109,9 +113,10 @@ pagerank1(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
  * @param   num_edges   number of edges
  */
 __global__ void
-pagerank2(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
+pagerank2(unsigned long long *kt, int *row, int *col, int *data, float *page_rank1, float *page_rank2,
           const int num_nodes, const int num_edges)
 {
+    KT_BEGIN();
     // Get my workitem id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
@@ -120,6 +125,8 @@ pagerank2(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
         page_rank1[tid]	= 0.15 / (float)num_nodes + 0.85 * page_rank2[tid];
         page_rank2[tid] = 0.0f;
     }
+
+    KT_END(kt);
 }
 
 /**
@@ -130,9 +137,10 @@ pagerank2(int *row, int *col, int *data, float *page_rank1, float *page_rank2,
  * @param   num_nodes   number of vertices
  */
 __global__ void
-inibuffer(int *row, float *page_rank1, float *page_rank2, const int num_nodes,
+inibuffer(unsigned long long *kt, int *row, float *page_rank1, float *page_rank2, const int num_nodes,
           const int num_edges)
 {
+    KT_BEGIN();
     // Get my thread id
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
 
@@ -140,6 +148,8 @@ inibuffer(int *row, float *page_rank1, float *page_rank2, const int num_nodes,
         page_rank1[tid] = 1 / (float)num_nodes;
         page_rank2[tid] = 0.0f;
     }
+
+    KT_END(kt);
 }
 
 #endif // KERNEL_H
