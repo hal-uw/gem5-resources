@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <algorithm>
 #include <hip/hip_runtime.h>
+#include "kernel_timer.h"
 #include <utility>
 #include <vector>
 #include <algorithm>
@@ -525,7 +526,7 @@ static __device__ void pgasCalcStateAtHalf(
 }
 
 
-__global__ void gpuInvMap(
+__device__ void gpuInvMap_body(
         const int* mapspkey,
         const int* mapspval,
         int* mappsfirst,
@@ -546,6 +547,18 @@ __global__ void gpuInvMap(
     else
         mapssnext[s] = sp;
 
+}
+
+// gpuInvMap timed with s_memrealtime (kernel_timer.h)
+__global__ void gpuInvMap(unsigned long long *kt, 
+        const int* mapspkey,
+        const int* mapspval,
+        int* mappsfirst,
+        int* mapssnext)
+{
+    KT_BEGIN();
+    gpuInvMap_body(mapspkey, mapspval, mappsfirst, mapssnext);
+    KT_END(kt);
 }
 
 
@@ -804,7 +817,7 @@ static __device__ void hydroCalcDt(
 }
 
 
-__global__ void gpuMain1(int dummy)
+__device__ void gpuMain1_body(int dummy)
 {
     const int p = hipBlockIdx_x * CHUNK_SIZE + hipThreadIdx_x;
     if (p >= nump) return;
@@ -821,8 +834,16 @@ __global__ void gpuMain1(int dummy)
 
 }
 
+// gpuMain1 timed with s_memrealtime (kernel_timer.h)
+__global__ void gpuMain1(unsigned long long *kt, int dummy)
+{
+    KT_BEGIN();
+    gpuMain1_body(dummy);
+    KT_END(kt);
+}
 
-__global__ void gpuMain2(int dummy)
+
+__device__ void gpuMain2_body(int dummy)
 {
     const int s0 = hipThreadIdx_x;
     const int sch = hipBlockIdx_x;
@@ -877,8 +898,16 @@ __global__ void gpuMain2(int dummy)
 
 }
 
+// gpuMain2 timed with s_memrealtime (kernel_timer.h)
+__global__ void gpuMain2(unsigned long long *kt, int dummy)
+{
+    KT_BEGIN();
+    gpuMain2_body(dummy);
+    KT_END(kt);
+}
 
-__global__ void gpuMain3(int dummy)
+
+__device__ void gpuMain3_body(int dummy)
 {
     const int p = hipBlockIdx_x * CHUNK_SIZE + hipThreadIdx_x;
     if (p >= nump) return;
@@ -902,8 +931,16 @@ __global__ void gpuMain3(int dummy)
 
 }
 
+// gpuMain3 timed with s_memrealtime (kernel_timer.h)
+__global__ void gpuMain3(unsigned long long *kt, int dummy)
+{
+    KT_BEGIN();
+    gpuMain3_body(dummy);
+    KT_END(kt);
+}
 
-__global__ void gpuMain4(int dummy)
+
+__device__ void gpuMain4_body(int dummy)
 {
     const int s0 = hipThreadIdx_x;
     const int sch = hipBlockIdx_x;
@@ -940,8 +977,16 @@ __global__ void gpuMain4(int dummy)
 
 }
 
+// gpuMain4 timed with s_memrealtime (kernel_timer.h)
+__global__ void gpuMain4(unsigned long long *kt, int dummy)
+{
+    KT_BEGIN();
+    gpuMain4_body(dummy);
+    KT_END(kt);
+}
 
-__global__ void gpuMain5(int dummy)
+
+__device__ void gpuMain5_body(int dummy)
 {
     const int z = hipBlockIdx_x * CHUNK_SIZE + hipThreadIdx_x;
     if (z >= numz) return;
@@ -963,6 +1008,14 @@ __global__ void gpuMain5(int dummy)
     hydroCalcDt(z, z0, zlength, zdu, zss, zdl, zvol, zvol0, dt[0],
                 dtnext[0], idtnext[0], ctemp, ctemp2);
 
+}
+
+// gpuMain5 timed with s_memrealtime (kernel_timer.h)
+__global__ void gpuMain5(unsigned long long *kt, int dummy)
+{
+    KT_BEGIN();
+    gpuMain5_body(dummy);
+    KT_END(kt);
 }
 
 
@@ -1262,7 +1315,7 @@ void hydroInit(
 
     int gridSize = (numsH+CHUNK_SIZE - 1)/ CHUNK_SIZE;
     int chunkSize = CHUNK_SIZE;
-    hipLaunchKernelGGL(gpuInvMap, dim3(gridSize), dim3(chunkSize), 0, 0, mapspkeyD, mapspvalD,
+    hipLaunchKernelGGL(gpuInvMap, dim3(gridSize), dim3(chunkSize), 0, 0, kt.next("gpuInvMap"), mapspkeyD, mapspvalD,
         mappsfirstD, mapssnextD);
     hipDeviceSynchronize();
 
@@ -1294,24 +1347,24 @@ void hydroDoCycle(
     gridSizeZ = numzchH;
     chunkSize = CHUNK_SIZE;
 
-    hipLaunchKernelGGL(gpuMain1, dim3(gridSizeP), dim3(chunkSize), 0, 0, 0);
+    hipLaunchKernelGGL(gpuMain1, dim3(gridSizeP), dim3(chunkSize), 0, 0, kt.next("gpuMain1"), 0);
     hipDeviceSynchronize();
 
-    hipLaunchKernelGGL(gpuMain2, dim3(gridSizeS), dim3(chunkSize), 0, 0, 0);
+    hipLaunchKernelGGL(gpuMain2, dim3(gridSizeS), dim3(chunkSize), 0, 0, kt.next("gpuMain2"), 0);
     hipDeviceSynchronize();
     meshCheckBadSides();
 
-    hipLaunchKernelGGL(gpuMain3, dim3(gridSizeP), dim3(chunkSize), 0, 0, 0);
+    hipLaunchKernelGGL(gpuMain3, dim3(gridSizeP), dim3(chunkSize), 0, 0, kt.next("gpuMain3"), 0);
     hipDeviceSynchronize();
 
     double bigval = 1.e99;
     CHKERR(hipMemcpy(dtnextD, &bigval, sizeof(double), hipMemcpyHostToDevice));
 
 
-    hipLaunchKernelGGL(gpuMain4, dim3(gridSizeS), dim3(chunkSize), 0, 0, 0);
+    hipLaunchKernelGGL(gpuMain4, dim3(gridSizeS), dim3(chunkSize), 0, 0, kt.next("gpuMain4"), 0);
     hipDeviceSynchronize();
 
-    hipLaunchKernelGGL(gpuMain5, dim3(gridSizeZ), dim3(chunkSize), 0, 0, 0);
+    hipLaunchKernelGGL(gpuMain5, dim3(gridSizeZ), dim3(chunkSize), 0, 0, kt.next("gpuMain5"), 0);
     hipDeviceSynchronize();
     meshCheckBadSides();
 

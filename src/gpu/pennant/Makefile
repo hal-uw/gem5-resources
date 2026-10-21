@@ -48,6 +48,8 @@ CXXFLAGS_OPENMP := #-fopenmp
 
 CUDAC := $(HIP_PATH)/hipcc
 CUDACFLAGS := #--generate-code arch=compute_60,code=sm_60 --ptxas-options=-v
+# time every launch of the longest tests (nohpoly: 9876 cycles x 5 kernels)
+CUDACFLAGS += -DKT_MAX_LAUNCHES=51200
 CUDACFLAGS_DEBUG := -G -lineinfo
 CUDACFLAGS_OPT := -O3
 
