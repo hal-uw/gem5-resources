@@ -10,7 +10,7 @@ BIN_DIR?= ./bin.default
 square: $(BIN_DIR)/$(EXECUTABLE)
 
 $(BIN_DIR)/$(EXECUTABLE): $(CPPSRC) $(BIN_DIR)
-	$(HIPCC) $(OPTS) --offload-arch=gfx906 $(CXXFLAGS) $(CPPSRC) -o $(BIN_DIR)/$(EXECUTABLE)
+	$(HIPCC) $(OPTS) --offload-arch=gfx906,gfx942 $(CXXFLAGS) $(CPPSRC) -o $(BIN_DIR)/$(EXECUTABLE)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

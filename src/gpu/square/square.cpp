@@ -22,6 +22,7 @@ THE SOFTWARE.
 
 #include <stdio.h>
 #include "hip/hip_runtime.h"
+#include "kernel_timer.h"
 #ifdef GEM5_FUSION
 #include <util/m5/src/m5_mmap.h>
 #include <gem5/m5ops.h>
@@ -42,8 +43,8 @@ THE SOFTWARE.
  * Square each element in the array A and write to array C.
  */
 template <typename T>
-__global__ void
-vector_square(T *C_d, const T *A_d, size_t N)
+__device__ void
+vector_square_body(T *C_d, const T *A_d, size_t N)
 {
     // start timing
     //asm volatile("s_barrier");
@@ -66,6 +67,15 @@ vector_square(T *C_d, const T *A_d, size_t N)
     // write time and data back to memory
     //clk[offset] += stop - start;
     }
+
+// vector_square timed with s_memrealtime (kernel_timer.h)
+template <typename T>
+__global__ void vector_square(unsigned long long *kt, T *C_d, const T *A_d, size_t N)
+{
+    KT_BEGIN();
+    vector_square_body<T>(C_d, A_d, N);
+    KT_END(kt);
+}
 
 struct TimingEvent{
     std::string name;
@@ -121,7 +131,7 @@ int main(int argc, char *argv[])
 
     const unsigned blocks = 512;
     const unsigned threadsPerBlock = 256;
-    hipLaunchKernelGGL(vector_square, dim3(blocks), dim3(threadsPerBlock), 0, 0, C_h, A_h, N);
+    hipLaunchKernelGGL(vector_square, dim3(blocks), dim3(threadsPerBlock), 0, 0, nullptr /* untimed warmup */, C_h, A_h, N);
     hipDeviceSynchronize();
    printf ("info: launch 'vector_square' kernel\n");
     //uint64_t *clk_g;
@@ -136,7 +146,7 @@ int main(int argc, char *argv[])
     start_timer(&kernel1);
 
     for (int i = 0; i < ITERS; i++) {
-        hipLaunchKernelGGL(vector_square, dim3(blocks), dim3(threadsPerBlock), 0, 0, C_h, A_h, N);
+        hipLaunchKernelGGL(vector_square, dim3(blocks), dim3(threadsPerBlock), 0, 0, kt.next("vector_square"), C_h, A_h, N);
         hipDeviceSynchronize();
     }
     hipDeviceSynchronize();
