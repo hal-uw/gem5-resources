@@ -60,10 +60,10 @@ sudo mkdir --parents --mode=0755 /etc/apt/keyrings
 wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
         gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
 
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/6.4/ubuntu noble main" \
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/7.0/ubuntu noble main" \
         | sudo tee /etc/apt/sources.list.d/amdgpu.list
 
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4 noble main" \
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.0 noble main" \
         | sudo tee --append /etc/apt/sources.list.d/rocm.list
 echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
         | sudo tee /etc/apt/preferences.d/rocm-pin-600
@@ -86,8 +86,8 @@ sudo chmod 777 /usr/lib/firmware/amdgpu/ip_discovery.bin
 
 
 # Install a known-working version of Linux as this might change after stable
-# release. Installl this after DKMS so they are rebuilt.
-KERNEL=6.8.0-60-generic
+# release. Install this after DKMS so they are rebuilt.
+KERNEL=6.8.0-124-generic
 
 sudo apt -y install "linux-image-${KERNEL}"
 sudo apt -y install "linux-headers-${KERNEL}" "linux-modules-extra-${KERNEL}"
@@ -105,6 +105,13 @@ if [ ! -f ./gem5_wmi.ko ]; then
 fi
 popd
 
+# Make the discovery files writeable by packer
+touch /usr/lib/firmware/amdgpu/mi300_discovery
+touch /usr/lib/firmware/amdgpu/mi350_discovery
+
+chmod 777 /usr/lib/firmware/amdgpu/mi300_discovery
+chmod 777 /usr/lib/firmware/amdgpu/mi350_discovery
+
 # Note about pip: This disk is created for the express purpose of being run in
 # gem5 and is therefore effectively sandboxed enough that we can use the pip
 # option --break-system-packages. If you plan to modify this disk image with
@@ -121,11 +128,9 @@ pip3 install --break-system-packages torch torchvision torchaudio --index-url ht
 
 # For a newer version uncomment one below and remove the above install:
 # Warning: Absurdly slow compared to ROCm 6.0 *in simulation*:
-#pip3 install --break-system-packages torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2.4
-# Warning: Missing python module torch.sparse.......:
-#pip3 install --break-system-packages torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
+#pip3 install --break-system-packages torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.4
 # Warning: nightly build, may not work depending on day. Use at your own risk:
-#pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.4/ --break-system-packages
+#pip3 install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/rocm7.0 --break-system-packages
 
 # Setup gem5 auto login.
 mv /home/gem5/serial-getty@.service /lib/systemd/system/

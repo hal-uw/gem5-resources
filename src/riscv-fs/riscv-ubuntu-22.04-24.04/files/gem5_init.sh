@@ -14,12 +14,29 @@ mount -t sysfs /sys /sys
 # Read /proc/cmdline and parse options
 cmdline=$(cat /proc/cmdline)
 no_systemd=false
+# Load gem5_bridge driver
+## Default parameters (RISCV)
+gem5_bridge_baseaddr=0x40000000 # Using address of 1GB as gem5-bridge does not use address mode for riscv
+gem5_bridge_rangesize=0x10000
+## Try to read overloads from kernel arguments
+if [[ $cmdline =~ gem5_bridge_baseaddr=([[:alnum:]]+) ]]; then
+    gem5_bridge_baseaddr=${BASH_REMATCH[1]}
+fi
+if [[ $cmdline =~ gem5_bridge_rangesize=([[:alnum:]]+) ]]; then
+    gem5_bridge_rangesize=${BASH_REMATCH[1]}
+fi
+## Insert driver
+modprobe gem5_bridge \
+    gem5_bridge_baseaddr=$gem5_bridge_baseaddr \
+    gem5_bridge_rangesize=$gem5_bridge_rangesize
 
+# see if this modprode fails or not
+# print warning if it fails, gem5-bridge module is not going to work, you will need sudo for running exit events
 # gem5-bridge exit signifying that kernel is booted
 # This will cause the simulation to exit. Note that this will
 # cause qemu to fail.
 printf "Kernel booted, In gem5 init...\n"
-gem5-bridge exit # TODO: Make this a specialized event.
+gem5-bridge hypercall 1
 
 if [[ $cmdline == *"no_systemd"* ]]; then
     no_systemd=true

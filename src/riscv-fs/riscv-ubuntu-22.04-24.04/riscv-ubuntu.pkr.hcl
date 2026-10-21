@@ -53,7 +53,7 @@ source "qemu" "initialize" {
   headless         = "true"
   disk_image       = "true"
   boot_command = [
-                  "<wait10><enter>",
+                  "<wait10><enter>",  // If the build process is hanging during login, the `<wait>` commands may need to be adjusted.
                   "<wait120>",
                   "ubuntu<enter><wait>",
                   "ubuntu<enter><wait>",
@@ -107,6 +107,10 @@ build {
     source      = "files/serial-getty@.service"
   }
 
+  provisioner "file" {
+    destination = "/home/gem5"
+    source      = "my-riscv-6.8.12-kernel/6.8.12"
+  }
   provisioner "shell" {
     execute_command = "echo '${var.ssh_password}' | {{ .Vars }} sudo -E -S bash '{{ .Path }}'"
     scripts         = ["scripts/post-installation.sh"]

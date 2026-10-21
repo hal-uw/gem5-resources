@@ -24,6 +24,7 @@ insmod /lib/modules/`uname -r`/updates/dkms/amdkcl.ko.zst
 insmod /lib/modules/`uname -r`/updates/dkms/amd-sched.ko.zst
 insmod /lib/modules/`uname -r`/updates/dkms/amdxcp.ko.zst
 insmod /lib/modules/`uname -r`/updates/dkms/amddrm_buddy.ko.zst
+insmod /lib/modules/`uname -r`/updates/dkms/amddrm_exec.ko.zst
 insmod /lib/modules/`uname -r`/updates/dkms/amdttm.ko.zst
 insmod /lib/modules/`uname -r`/updates/dkms/amddrm_ttm_helper.ko.zst
 

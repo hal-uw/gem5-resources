@@ -14,5 +14,6 @@ fi
 # Install the needed plugins
 ./packer init x86-ubuntu-gpu-ml.pkr.hcl
 
-# Build the image
-./packer build x86-ubuntu-gpu-ml.pkr.hcl
+# Build the image - Pass command line options from this script to build
+# command. This can be used to set variable such as qemu path.
+./packer build "$@" x86-ubuntu-gpu-ml.pkr.hcl
