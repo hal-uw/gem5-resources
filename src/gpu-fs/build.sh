@@ -25,4 +25,5 @@ PATH=/usr/bin:$PATH make -C criu amdgpu_plugin
 
 "$ROCM/bin/hipcc" -std=c++17 -shared -fPIC -o klHook/libklhook.so klHook/klhook.cc -ldl
 
-echo "built: criu/criu/criu criu/plugins/amdgpu/amdgpu_plugin.so klHook/libklhook.so"
+echo "built: criu/criu/criu criu/plugins/amdgpu/amdgpu_plugin.so" \
+     "criu/plugins/amdgpu/gem5/amdgpu_plugin_gem5.so klHook/libklhook.so"

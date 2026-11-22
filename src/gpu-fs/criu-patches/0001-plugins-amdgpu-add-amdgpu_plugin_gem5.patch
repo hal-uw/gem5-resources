@@ -1,0 +1,975 @@
+From d5c3e61f792074d9f480f4fa99a35940415da0b8 Mon Sep 17 00:00:00 2001
+From: Vishnu Ramadas <vramadas@outlook.com>
+Date: Sun, 22 Nov 2026 16:52:54 -0600
+Subject: [PATCH] plugins/amdgpu: add amdgpu_plugin_gem5 for restores in gem5
+
+Build a second amdgpu plugin, gem5/amdgpu_plugin_gem5.so
+(-DAMDGPU_PLUGIN_GEM5), for restoring MI300X checkpoints inside a gem5
+GPU full-system guest. The stock amdgpu_plugin.so is built from the same
+sources without it and behaves as upstream. CRIU loads every plugin in
+its -L directory, so the gem5 plugin is built and installed in its own
+gem5/ subdirectory: -L plugins/amdgpu selects the stock plugin,
+-L plugins/amdgpu/gem5 the gem5 one.
+
+The gem5 plugin differs from the stock one in three ways:
+
+- Restore onto a subset of the checkpointed GPUs (on by default,
+  KFD_RESTORE_GPU_SUBSET=0 turns it off). The ROCm runtime opens every
+  visible GPU, so a process that computes on one GPU of an 8-GPU node is
+  checkpointed with a KFD process device for every GPU, and a stock
+  restore needs all of them. GPUs that hold no state besides their
+  MMIO-remap page are left out: their device entries and MMIO-remap BOs
+  are not restored, they are removed from BO mapped_gpuids and SVM
+  attributes in the KFD private data (KFD_CRIU_PRIV_VERSION 1 only), and
+  their render-node fds and MMIO-page CPU mappings go to the kept GPU.
+  Image files are not modified; everything is rewritten in memory.
+
+- io_links_count of a checkpointed GPU counts only links whose peer is in
+  the checkpoint. The stored value is the raw sysfs count, which also
+  counts links to nodes the dump could not see (a device cgroup exposing
+  one CPX partition stores 15 links but serializes 1) and links to GPUs
+  left out above; neither is restored, so neither takes part in the
+  topology match.
+
+- SDMA COPY_LINEAR count is bytes - 1 on AMDGPU_FAMILY_AI and newer, as
+  the kernel's sdma_v4+ emit_copy_buffer writes it. The plugin writes the
+  byte count, which copies one byte past the end of both buffers; gem5's
+  SDMA model executes exactly that and corrupts the neighbouring data.
+  The stock plugin keeps upstream's count.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ plugins/amdgpu/Makefile                 |  23 +-
+ plugins/amdgpu/amdgpu_plugin.c          |  96 ++++-
+ plugins/amdgpu/amdgpu_plugin_subset.c   | 549 ++++++++++++++++++++++++
+ plugins/amdgpu/amdgpu_plugin_subset.h   |  88 ++++
+ plugins/amdgpu/amdgpu_plugin_topology.c |   8 +
+ 5 files changed, 756 insertions(+), 8 deletions(-)
+ create mode 100644 plugins/amdgpu/amdgpu_plugin_subset.c
+ create mode 100644 plugins/amdgpu/amdgpu_plugin_subset.h
+
+diff --git a/plugins/amdgpu/Makefile b/plugins/amdgpu/Makefile
+index 7d3388b80..70d49b64d 100644
+--- a/plugins/amdgpu/Makefile
++++ b/plugins/amdgpu/Makefile
+@@ -1,5 +1,12 @@
+ PLUGIN_NAME		:= amdgpu_plugin
+ PLUGIN_SOBJ		:= amdgpu_plugin.so
++# amdgpu_plugin_gem5: for restoring MI300X checkpoints in a gem5 GPU
++# full-system guest (restores onto the subset of checkpointed GPUs that hold
++# state, SDMA COPY_LINEAR count fix). CRIU loads every plugin in its -L
++# directory, so it is built and installed in its own gem5/ directory:
++# -L plugins/amdgpu is the stock plugin, -L plugins/amdgpu/gem5 this one.
++GEM5_SOBJ		:= gem5/amdgpu_plugin_gem5.so
++GEM5_DIR		:= $(PLUGINDIR)/gem5
+ 
+ 
+ PLUGIN_INCLUDE  	:= -iquote../../include
+@@ -9,7 +16,7 @@ PLUGIN_INCLUDE  	+= -iquote../../
+ 
+ COMPEL                 := ../../compel/compel-host
+ LIBDRM_INC 		:= -I/usr/include/libdrm
+-DEPS_OK 		:= amdgpu_plugin.so amdgpu_plugin_test
++DEPS_OK 		:= amdgpu_plugin.so $(GEM5_SOBJ) amdgpu_plugin_test
+ DEPS_NOK 		:= ;
+ 
+ __nmk_dir ?= ../../scripts/nmk/scripts/
+@@ -27,12 +34,18 @@ endif
+ criu-amdgpu.pb-c.c: criu-amdgpu.proto
+ 		protoc-c --proto_path=. --c_out=. criu-amdgpu.proto
+ 
+-amdgpu_plugin.so: amdgpu_plugin.c amdgpu_plugin_drm.c amdgpu_plugin_topology.c amdgpu_plugin_util.c criu-amdgpu.pb-c.c
++PLUGIN_SRCS		:= amdgpu_plugin.c amdgpu_plugin_drm.c amdgpu_plugin_topology.c amdgpu_plugin_util.c criu-amdgpu.pb-c.c
++
++amdgpu_plugin.so: $(PLUGIN_SRCS)
+ 	$(CC) $(PLUGIN_CFLAGS) $(shell $(COMPEL) includes) $^ -o $@ $(PLUGIN_INCLUDE) $(PLUGIN_LDFLAGS) $(LIBDRM_INC)
+ 
++$(GEM5_SOBJ): $(PLUGIN_SRCS) amdgpu_plugin_subset.c
++	$(Q) mkdir -p $(dir $@)
++	$(CC) $(PLUGIN_CFLAGS) -DAMDGPU_PLUGIN_GEM5 $(shell $(COMPEL) includes) $^ -o $@ $(PLUGIN_INCLUDE) $(PLUGIN_LDFLAGS) $(LIBDRM_INC)
++
+ amdgpu_plugin_clean:
+ 	$(call msg-clean, $@)
+-	$(Q) $(RM) amdgpu_plugin.so criu-amdgpu.pb-c*
++	$(Q) $(RM) -r amdgpu_plugin.so gem5 criu-amdgpu.pb-c*
+ .PHONY: amdgpu_plugin_clean
+ 
+ test_topology_remap: amdgpu_plugin_topology.c tests/test_topology_remap.c
+@@ -54,6 +67,9 @@ ifeq ($(CONFIG_AMDGPU),y)
+ 	$(Q) mkdir -p $(DESTDIR)$(PLUGINDIR)
+ 	$(E) "  INSTALL " $(PLUGIN_NAME)
+ 	$(Q) install -m 755 $(PLUGIN_SOBJ) $(DESTDIR)$(PLUGINDIR)
++	$(Q) mkdir -p $(DESTDIR)$(GEM5_DIR)
++	$(E) "  INSTALL " amdgpu_plugin_gem5
++	$(Q) install -m 755 $(GEM5_SOBJ) $(DESTDIR)$(GEM5_DIR)
+ endif
+ .PHONY: install
+ 
+@@ -61,5 +77,6 @@ uninstall:
+ ifeq ($(CONFIG_AMDGPU),y)
+ 	$(E) " UNINSTALL" $(PLUGIN_NAME)
+ 	$(Q) $(RM) $(DESTDIR)$(PLUGINDIR)/$(PLUGIN_SOBJ)
++	$(Q) $(RM) $(DESTDIR)$(GEM5_DIR)/amdgpu_plugin_gem5.so
+ endif
+ .PHONY: uninstall
+diff --git a/plugins/amdgpu/amdgpu_plugin.c b/plugins/amdgpu/amdgpu_plugin.c
+index b56ba6d14..e5ee754b5 100644
+--- a/plugins/amdgpu/amdgpu_plugin.c
++++ b/plugins/amdgpu/amdgpu_plugin.c
+@@ -33,6 +33,7 @@
+ #include "amdgpu_plugin_drm.h"
+ #include "amdgpu_plugin_util.h"
+ #include "amdgpu_plugin_topology.h"
++#include "amdgpu_plugin_subset.h"
+ 
+ #include "img-streamer.h"
+ #include "image.h"
+@@ -356,6 +357,12 @@ int amdgpu_plugin_init(int stage)
+ 		getenv_bool("KFD_VRAM_SIZE_CHECK", &kfd_vram_size_check);
+ 		getenv_bool("KFD_NUMA_CHECK", &kfd_numa_check);
+ 		getenv_bool("KFD_CAPABILITY_CHECK", &kfd_capability_check);
++
++#ifdef AMDGPU_PLUGIN_GEM5
++		/* amdgpu_plugin_gem5: restore onto the subset of GPUs that hold state */
++		kfd_restore_gpu_subset = true;
++		getenv_bool("KFD_RESTORE_GPU_SUBSET", &kfd_restore_gpu_subset);
++#endif
+ 	}
+ 	kfd_max_buffer_size = 0;
+ 	getenv_size_t("KFD_MAX_BUFFER_SIZE", &kfd_max_buffer_size);
+@@ -377,7 +384,11 @@ void amdgpu_plugin_fini(int stage, int ret)
+ 	topology_free(&dest_topology);
+ }
+ 
++#ifdef AMDGPU_PLUGIN_GEM5
++CR_PLUGIN_REGISTER("amdgpu_plugin_gem5", amdgpu_plugin_init, amdgpu_plugin_fini)
++#else
+ CR_PLUGIN_REGISTER("amdgpu_plugin", amdgpu_plugin_init, amdgpu_plugin_fini)
++#endif
+ 
+ struct thread_data {
+ 	pthread_t thread;
+@@ -481,9 +492,23 @@ void free_and_unmap(uint64_t size, amdgpu_bo_handle h_bo, amdgpu_va_handle h_va,
+ 	amdgpu_bo_free(h_bo);
+ }
+ 
++/*
++ * COPY_LINEAR count: bytes - 1 on AMDGPU_FAMILY_AI and newer (as the kernel
++ * driver's sdma_v4+ emit_copy_buffer writes it), bytes on older families.
++ * Writing the byte count on AI+ copies one byte past the end of both source
++ * and destination; gem5's SDMA model executes exactly that. Corrected only in
++ * amdgpu_plugin_gem5; the stock plugin keeps upstream's count.
++ */
++#ifdef AMDGPU_PLUGIN_GEM5
++#define sdma_count_is_bytes_minus_one(family_id) ((family_id) >= AMDGPU_FAMILY_AI)
++#else
++#define sdma_count_is_bytes_minus_one(family_id) false
++#endif
++
+ static int sdma_copy_bo(struct kfd_criu_bo_bucket bo_bucket, FILE *storage_fp,
+ 						void *buffer, size_t buffer_size, amdgpu_device_handle h_dev,
+-						uint64_t max_copy_size, enum sdma_op_type type)
++						uint64_t max_copy_size, bool count_is_bytes_minus_one,
++						enum sdma_op_type type)
+ {
+ 	uint64_t size, src_bo_size, dst_bo_size, buffer_bo_size, bytes_remain, buffer_space_remain;
+ 	uint64_t gpu_addr_src, gpu_addr_dst, gpu_addr_ib, copy_src, copy_dst, copy_size;
+@@ -630,7 +655,8 @@ static int sdma_copy_bo(struct kfd_criu_bo_bucket bo_bucket, FILE *storage_fp,
+ 			copy_size = min(min(bytes_remain, max_copy_size), buffer_space_remain);
+ 
+ 			ib[j++] = SDMA_PACKET(SDMA_OPCODE_COPY, SDMA_COPY_SUB_OPCODE_LINEAR, 0);
+-			ib[j++] = copy_size;
++			/* see sdma_count_is_bytes_minus_one() */
++			ib[j++] = count_is_bytes_minus_one ? copy_size - 1 : copy_size;
+ 			ib[j++] = 0;
+ 			ib[j++] = 0xffffffff & copy_src;
+ 			ib[j++] = (0xffffffff00000000 & copy_src) >> 32;
+@@ -801,7 +827,7 @@ void *dump_bo_contents(void *_thread_data)
+ 
+ 		/* perform sDMA based vram copy */
+ 		ret = sdma_copy_bo(bo_buckets[i], bo_contents_fp, buffer, buffer_size, h_dev, max_copy_size,
+-				   SDMA_OP_VRAM_READ);
++				   sdma_count_is_bytes_minus_one(gpu_info.family_id), SDMA_OP_VRAM_READ);
+ 		if (ret) {
+ 			pr_err("Failed to drain the BO using sDMA: bo_buckets[%d]\n", i);
+ 			break;
+@@ -899,7 +925,7 @@ void *restore_bo_contents(void *_thread_data)
+ 		num_bos++;
+ 
+ 		ret = sdma_copy_bo(bo_buckets[i], bo_contents_fp, buffer, buffer_size, h_dev, max_copy_size,
+-				   SDMA_OP_VRAM_WRITE);
++				   sdma_count_is_bytes_minus_one(gpu_info.family_id), SDMA_OP_VRAM_WRITE);
+ 		if (ret) {
+ 			pr_err("Failed to fill the BO using sDMA: bo_buckets[%d]\n", i);
+ 			break;
+@@ -1529,6 +1555,47 @@ exit:
+ 	return ret;
+ }
+ 
++/*
++ * KFD_RESTORE_GPU_SUBSET: the CPU mappings of a dropped GPU's MMIO-remap page
++ * (HDP flush registers) are pointed at the restored MMIO-remap page of the
++ * kept GPU that stands in for it.
++ */
++static int add_subset_vma_redirects(struct kfd_criu_bo_bucket *bo_buckets, uint64_t num_bos)
++{
++	for (uint32_t i = 0; i < subset_num_dropped_mmio(); i++) {
++		const KfdBoEntry *bo = subset_dropped_mmio(i);
++		uint32_t alias = subset_alias(bo->gpu_id);
++		struct kfd_criu_bo_bucket *stand_in = subset_mmio_stand_in(bo_buckets, num_bos, alias);
++		struct vma_metadata *vma_md;
++		struct tp_node *tp_node;
++
++		if (!stand_in) {
++			pr_err("No MMIO-remap BO on 0x%04x to stand in for 0x%04x\n", alias, bo->gpu_id);
++			return -EINVAL;
++		}
++
++		tp_node = sys_get_node_by_gpu_id(&dest_topology, maps_get_dest_gpu(&restore_maps, alias));
++		if (!tp_node)
++			return -ENODEV;
++
++		vma_md = xzalloc(sizeof(*vma_md));
++		if (!vma_md)
++			return -ENOMEM;
++
++		vma_md->old_pgoff = bo->offset;
++		vma_md->vma_entry = bo->addr;
++		vma_md->new_pgoff = stand_in->restored_offset;
++		vma_md->new_minor = tp_node->drm_render_minor;
++		vma_md->fd = node_get_drm_render_device(tp_node);
++		list_add_tail(&vma_md->list, &update_vma_info_list);
++
++		pr_info("MMIO page of 0x%04x at 0x%lx: offset 0x%lx -> 0x%llx (0x%04x)\n", bo->gpu_id,
++			(unsigned long)bo->addr, (unsigned long)bo->offset,
++			(unsigned long long)stand_in->restored_offset, alias);
++	}
++	return 0;
++}
++
+ int amdgpu_plugin_restore_file(int id)
+ {
+ 	int ret = 0, fd;
+@@ -1587,6 +1654,12 @@ int amdgpu_plugin_restore_file(int id)
+ 		pr_info("render node gpu_id = 0x%04x\n", rd->gpu_id);
+ 
+ 		target_gpu_id = maps_get_dest_gpu(&restore_maps, rd->gpu_id);
++		if (!target_gpu_id && subset_is_dropped(rd->gpu_id)) {
++			/* GPU left out by KFD_RESTORE_GPU_SUBSET: hand out its stand-in's render node */
++			target_gpu_id = maps_get_dest_gpu(&restore_maps, subset_alias(rd->gpu_id));
++			pr_info("render node gpu_id 0x%04x was not restored, using 0x%04x\n", rd->gpu_id,
++				subset_alias(rd->gpu_id));
++		}
+ 		if (!target_gpu_id) {
+ 			fd = -ENODEV;
+ 			goto fail;
+@@ -1670,12 +1743,19 @@ int amdgpu_plugin_restore_file(int id)
+ 		goto exit;
+ 	}
+ 
++	ret = subset_apply(e);
++	if (ret) {
++		pr_err("Failed to select the GPU subset to restore\n");
++		goto exit;
++	}
++
+ 	ret = devinfo_to_topology(e->device_entries, e->num_of_gpus + e->num_of_cpus, &src_topology);
+ 	if (ret) {
+ 		pr_err("Failed to convert stored device information to topology\n");
+ 		ret = -EINVAL;
+ 		goto exit;
+ 	}
++	subset_fix_src_topology(&src_topology);
+ 
+ 	ret = topology_parse(&dest_topology, "Local");
+ 	if (ret) {
+@@ -1712,11 +1792,17 @@ int amdgpu_plugin_restore_file(int id)
+ 	if (ret)
+ 		goto exit;
+ 
++	ret = add_subset_vma_redirects((struct kfd_criu_bo_bucket *)args.bos, args.num_bos);
++	if (ret)
++		goto exit;
++
+ 	ret = restore_hsakmt_shared_mem(e->shared_mem_size, e->shared_mem_magic);
+ 
+ exit:
+-	if (e)
++	if (e) {
++		subset_undo(e);
+ 		criu_kfd__free_unpacked(e, NULL);
++	}
+ 
+ 	xfree((void *)args.devices);
+ 	xfree((void *)args.bos);
+diff --git a/plugins/amdgpu/amdgpu_plugin_subset.c b/plugins/amdgpu/amdgpu_plugin_subset.c
+new file mode 100644
+index 000000000..26b87e1a8
+--- /dev/null
++++ b/plugins/amdgpu/amdgpu_plugin_subset.c
+@@ -0,0 +1,549 @@
++#include <errno.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <assert.h>
++
++#include "criu-plugin.h"
++#include "plugin.h"
++#include "xmalloc.h"
++#include "criu-log.h"
++#include "common/list.h"
++
++#include "amdgpu_plugin_subset.h"
++#include "amdgpu_plugin_util.h"
++
++bool kfd_restore_gpu_subset;
++
++/*
++ * KFD private CRIU data layout, KFD_CRIU_PRIV_VERSION 1
++ * (drivers/gpu/drm/amd/amdkfd/kfd_priv.h). The blob passed to
++ * AMDKFD_IOC_CRIU_OP is:
++ *   process_priv
++ *   device_priv  x num_devices
++ *   bo_priv      x num_bos
++ *   object       x num_objects (queue | event | svm range, variable size)
++ */
++#define SUBSET_KFD_CRIU_PRIV_VERSION 1
++#define SUBSET_MAX_GPU_INSTANCE 64
++
++enum { SUBSET_OBJ_QUEUE = 0, SUBSET_OBJ_EVENT = 1, SUBSET_OBJ_SVM_RANGE = 2 };
++
++struct subset_process_priv {
++	uint32_t version;
++	uint32_t xnack_mode;
++};
++
++struct subset_device_priv {
++	uint64_t reserved;
++};
++
++struct subset_bo_priv {
++	uint64_t user_addr;
++	uint32_t idr_handle;
++	uint32_t mapped_gpuids[SUBSET_MAX_GPU_INSTANCE];
++	uint32_t is_imported;
++	uint32_t ipc_flags;
++	uint32_t ipc_share_handle[4];
++};
++
++struct subset_queue_priv {
++	uint32_t object_type;
++	uint64_t q_address;
++	uint64_t q_size;
++	uint64_t read_ptr_addr;
++	uint64_t write_ptr_addr;
++	uint64_t doorbell_off;
++	uint64_t eop_ring_buffer_address;
++	uint64_t ctx_save_restore_area_address;
++	uint32_t gpu_id;
++	uint32_t type;
++	uint32_t format;
++	uint32_t q_id;
++	uint32_t priority;
++	uint32_t q_percent;
++	uint32_t doorbell_id;
++	uint32_t gws;
++	uint32_t sdma_id;
++	uint32_t eop_ring_buffer_size;
++	uint32_t ctx_save_restore_area_size;
++	uint32_t ctl_stack_size;
++	uint32_t mqd_size;
++};
++
++struct subset_event_priv {
++	uint32_t object_type;
++	uint64_t user_handle;
++	uint32_t event_id;
++	uint32_t auto_reset;
++	uint32_t type;
++	uint32_t signaled;
++	union {
++		struct kfd_hsa_memory_exception_data memory_exception_data;
++		struct kfd_hsa_hw_exception_data hw_exception_data;
++	};
++};
++
++struct subset_svm_priv {
++	uint32_t object_type;
++	uint64_t start_addr;
++	uint64_t size;
++	struct kfd_ioctl_svm_attribute attrs[];
++};
++
++/* Sizes of the x86_64 kernel structs; a mismatch means the layout changed. */
++static_assert(sizeof(struct subset_process_priv) == 8, "process priv layout");
++static_assert(sizeof(struct subset_device_priv) == 8, "device priv layout");
++static_assert(sizeof(struct subset_bo_priv) == 296, "bo priv layout");
++static_assert(sizeof(struct subset_queue_priv) == 120, "queue priv layout");
++static_assert(sizeof(struct subset_event_priv) == 64, "event priv layout");
++static_assert(sizeof(struct subset_svm_priv) == 24, "svm priv layout");
++
++/* The kernel emits 4 common SVM attributes + 1 accessibility attr per pdd. */
++#define SUBSET_SVM_NATTR_COMMON 4
++
++static struct {
++	bool active;
++	uint32_t n_keep, n_drop;
++	uint32_t keep[SUBSET_MAX_GPU_INSTANCE];
++	uint32_t drop[SUBSET_MAX_GPU_INSTANCE];
++	uint32_t alias[SUBSET_MAX_GPU_INSTANCE]; /* kept src gpu for drop[i] */
++
++	/* Dropped MMIO-remap BOs, whose CPU mappings get redirected. */
++	uint32_t n_mmio;
++	KfdBoEntry *mmio[SUBSET_MAX_GPU_INSTANCE];
++
++	/* Originals swapped out of the CriuKfd message. */
++	uint32_t orig_num_gpus;
++	size_t orig_n_device_entries;
++	KfdDeviceEntry **orig_device_entries;
++	uint64_t orig_num_bos;
++	size_t orig_n_bo_entries;
++	KfdBoEntry **orig_bo_entries;
++	ProtobufCBinaryData orig_priv_data;
++} subset;
++
++static bool id_in(const uint32_t *ids, uint32_t n, uint32_t id)
++{
++	for (uint32_t i = 0; i < n; i++)
++		if (ids[i] == id)
++			return true;
++	return false;
++}
++
++bool subset_is_dropped(uint32_t gpu_id)
++{
++	return subset.active && id_in(subset.drop, subset.n_drop, gpu_id);
++}
++
++uint32_t subset_alias(uint32_t gpu_id)
++{
++	for (uint32_t i = 0; subset.active && i < subset.n_drop; i++)
++		if (subset.drop[i] == gpu_id)
++			return subset.alias[i];
++	return 0;
++}
++
++static bool is_svm_loc_attr(uint32_t type)
++{
++	return type == KFD_IOCTL_SVM_ATTR_PREFERRED_LOC || type == KFD_IOCTL_SVM_ATTR_PREFETCH_LOC;
++}
++
++static bool is_svm_access_attr(uint32_t type)
++{
++	return type == KFD_IOCTL_SVM_ATTR_ACCESS || type == KFD_IOCTL_SVM_ATTR_ACCESS_IN_PLACE ||
++	       type == KFD_IOCTL_SVM_ATTR_NO_ACCESS;
++}
++
++/*
++ * Walk the objects section. For each object call back with its offset and
++ * size. Returns the end offset, or 0 if the blob does not parse.
++ */
++typedef int (*obj_cb)(const uint8_t *obj, size_t size, uint32_t type, void *arg);
++
++static size_t walk_objects(const uint8_t *priv, size_t len, size_t off, uint32_t num_objects,
++			   uint32_t num_devices, obj_cb cb, void *arg)
++{
++	for (uint32_t i = 0; i < num_objects; i++) {
++		uint32_t type;
++		size_t size;
++
++		if (off + sizeof(uint32_t) > len)
++			return 0;
++		memcpy(&type, priv + off, sizeof(type));
++
++		switch (type) {
++		case SUBSET_OBJ_QUEUE: {
++			struct subset_queue_priv q;
++
++			if (off + sizeof(q) > len)
++				return 0;
++			memcpy(&q, priv + off, sizeof(q));
++			size = sizeof(q) + (uint64_t)q.ctl_stack_size + q.mqd_size;
++			break;
++		}
++		case SUBSET_OBJ_EVENT:
++			size = sizeof(struct subset_event_priv);
++			break;
++		case SUBSET_OBJ_SVM_RANGE:
++			size = sizeof(struct subset_svm_priv) +
++			       (SUBSET_SVM_NATTR_COMMON + num_devices) * sizeof(struct kfd_ioctl_svm_attribute);
++			break;
++		default:
++			pr_err("subset: unknown KFD object type %u at index %u\n", type, i);
++			return 0;
++		}
++		if (off + size > len)
++			return 0;
++		if (cb && cb(priv + off, size, type, arg))
++			return 0;
++		off += size;
++	}
++	return off;
++}
++
++struct used_ctx {
++	uint32_t *used;
++	uint32_t *n_used;
++};
++
++static void mark_used(struct used_ctx *u, uint32_t gpu_id)
++{
++	if (gpu_id && gpu_id != 0xffffffff && !id_in(u->used, *u->n_used, gpu_id) &&
++	    *u->n_used < SUBSET_MAX_GPU_INSTANCE)
++		u->used[(*u->n_used)++] = gpu_id;
++}
++
++static int mark_used_obj(const uint8_t *obj, size_t size, uint32_t type, void *arg)
++{
++	struct used_ctx *u = arg;
++
++	if (type == SUBSET_OBJ_QUEUE) {
++		struct subset_queue_priv q;
++
++		memcpy(&q, obj, sizeof(q));
++		mark_used(u, q.gpu_id);
++	} else if (type == SUBSET_OBJ_SVM_RANGE) {
++		size_t nattr = (size - sizeof(struct subset_svm_priv)) / sizeof(struct kfd_ioctl_svm_attribute);
++		const struct kfd_ioctl_svm_attribute *a =
++			(const void *)(obj + offsetof(struct subset_svm_priv, attrs));
++
++		for (size_t k = 0; k < nattr; k++) {
++			struct kfd_ioctl_svm_attribute at;
++
++			memcpy(&at, &a[k], sizeof(at));
++			if (is_svm_loc_attr(at.type) || at.type == KFD_IOCTL_SVM_ATTR_ACCESS ||
++			    at.type == KFD_IOCTL_SVM_ATTR_ACCESS_IN_PLACE)
++				mark_used(u, at.value);
++		}
++	}
++	return 0;
++}
++
++struct rewrite_ctx {
++	uint8_t *out;
++	size_t off;
++};
++
++static int rewrite_obj(const uint8_t *obj, size_t size, uint32_t type, void *arg)
++{
++	struct rewrite_ctx *r = arg;
++
++	if (type == SUBSET_OBJ_QUEUE) {
++		struct subset_queue_priv q;
++
++		memcpy(&q, obj, sizeof(q));
++		if (subset_is_dropped(q.gpu_id)) {
++			pr_err("subset: queue %u is on dropped GPU 0x%04x\n", q.q_id, q.gpu_id);
++			return -1;
++		}
++	}
++
++	if (type != SUBSET_OBJ_SVM_RANGE) {
++		memcpy(r->out + r->off, obj, size);
++		r->off += size;
++		return 0;
++	}
++
++	/* SVM range: keep the header and every attribute that is not an
++	 * accessibility attribute of a dropped GPU.
++	 */
++	size_t nattr = (size - sizeof(struct subset_svm_priv)) / sizeof(struct kfd_ioctl_svm_attribute);
++	const uint8_t *a = obj + sizeof(struct subset_svm_priv);
++	size_t kept = 0;
++
++	memcpy(r->out + r->off, obj, sizeof(struct subset_svm_priv));
++	r->off += sizeof(struct subset_svm_priv);
++	for (size_t k = 0; k < nattr; k++) {
++		struct kfd_ioctl_svm_attribute at;
++
++		memcpy(&at, a + k * sizeof(at), sizeof(at));
++		if (is_svm_access_attr(at.type) && subset_is_dropped(at.value))
++			continue;
++		if (is_svm_loc_attr(at.type) && subset_is_dropped(at.value)) {
++			pr_err("subset: SVM range uses dropped GPU 0x%04x as location\n", at.value);
++			return -1;
++		}
++		memcpy(r->out + r->off, &at, sizeof(at));
++		r->off += sizeof(at);
++		kept++;
++	}
++	if (kept != SUBSET_SVM_NATTR_COMMON + subset.n_keep) {
++		pr_err("subset: SVM range has %zu attributes after filtering, expected %u\n", kept,
++		       SUBSET_SVM_NATTR_COMMON + subset.n_keep);
++		return -1;
++	}
++	return 0;
++}
++
++static uint32_t pick_alias(CriuKfd *e, uint32_t dropped)
++{
++	uint64_t hive = 0;
++
++	for (size_t i = 0; i < e->n_device_entries; i++)
++		if (e->device_entries[i]->gpu_id == dropped)
++			hive = e->device_entries[i]->hive_id;
++
++	/* Prefer a kept GPU of the same XGMI hive, else the first kept GPU. */
++	for (size_t i = 0; hive && i < e->n_device_entries; i++) {
++		KfdDeviceEntry *d = e->device_entries[i];
++
++		if (d->gpu_id && d->hive_id == hive && id_in(subset.keep, subset.n_keep, d->gpu_id))
++			return d->gpu_id;
++	}
++	return subset.n_keep ? subset.keep[0] : 0;
++}
++
++int subset_apply(CriuKfd *e)
++{
++	const uint8_t *priv = e->priv_data.data;
++	size_t len = e->priv_data.len;
++	uint32_t used[SUBSET_MAX_GPU_INSTANCE], n_used = 0;
++	struct used_ctx u = { used, &n_used };
++	struct subset_process_priv pp;
++	size_t off, bo_off, obj_off, end;
++	KfdDeviceEntry **devs = NULL;
++	KfdBoEntry **bos = NULL;
++	uint8_t *out = NULL;
++	size_t n_devs = 0, n_bos = 0;
++
++	memset(&subset, 0, sizeof(subset));
++	if (!kfd_restore_gpu_subset)
++		return 0;
++
++	if (e->num_of_gpus > SUBSET_MAX_GPU_INSTANCE || len < sizeof(pp)) {
++		pr_err("subset: unexpected checkpoint (gpus:%u priv_data:%zu)\n", e->num_of_gpus, len);
++		return -EINVAL;
++	}
++	memcpy(&pp, priv, sizeof(pp));
++	if (pp.version != SUBSET_KFD_CRIU_PRIV_VERSION) {
++		pr_err("subset: KFD CRIU private data version %u not supported (need %u)\n", pp.version,
++		       SUBSET_KFD_CRIU_PRIV_VERSION);
++		return -EINVAL;
++	}
++
++	bo_off = sizeof(pp) + e->num_of_gpus * sizeof(struct subset_device_priv);
++	obj_off = bo_off + e->num_of_bos * sizeof(struct subset_bo_priv);
++	end = walk_objects(priv, len, obj_off, e->num_of_objects, e->num_of_gpus, mark_used_obj, &u);
++	if (!end || end != len) {
++		pr_err("subset: KFD private data does not match the expected layout (end:%zu len:%zu)\n", end,
++		       len);
++		return -EINVAL;
++	}
++
++	/* A GPU is needed if it owns anything other than its MMIO-remap page. */
++	for (size_t i = 0; i < e->n_bo_entries; i++)
++		if (!(e->bo_entries[i]->alloc_flags & KFD_IOC_ALLOC_MEM_FLAGS_MMIO_REMAP))
++			mark_used(&u, e->bo_entries[i]->gpu_id);
++
++	for (size_t i = 0; i < e->n_device_entries; i++) {
++		uint32_t id = e->device_entries[i]->gpu_id;
++
++		if (!id)
++			continue;
++		if (id_in(used, n_used, id))
++			subset.keep[subset.n_keep++] = id;
++		else
++			subset.drop[subset.n_drop++] = id;
++	}
++
++	pr_info("subset: %u checkpointed GPUs, %u in use, %u dropped\n", e->num_of_gpus, subset.n_keep,
++		subset.n_drop);
++	for (uint32_t i = 0; i < subset.n_keep; i++)
++		pr_info("subset:   keep 0x%04x\n", subset.keep[i]);
++	if (!subset.n_drop)
++		return 0;
++	if (!subset.n_keep) {
++		pr_err("subset: no GPU holds state; nothing to restore onto\n");
++		return -EINVAL;
++	}
++	subset.active = true;
++	for (uint32_t i = 0; i < subset.n_drop; i++) {
++		subset.alias[i] = pick_alias(e, subset.drop[i]);
++		pr_info("subset:   drop 0x%04x (fds/MMIO mappings -> 0x%04x)\n", subset.drop[i], subset.alias[i]);
++	}
++
++	/* New device and BO entry arrays (pointers into the original message). */
++	devs = xmalloc(sizeof(*devs) * e->n_device_entries);
++	bos = xmalloc(sizeof(*bos) * e->n_bo_entries);
++	out = xmalloc(len);
++	if (!devs || !bos || !out)
++		goto nomem;
++
++	for (size_t i = 0; i < e->n_device_entries; i++)
++		if (!subset_is_dropped(e->device_entries[i]->gpu_id))
++			devs[n_devs++] = e->device_entries[i];
++
++	/* Private data: process, kept devices, kept BOs (filtered mappings), objects. */
++	off = 0;
++	memcpy(out, priv, sizeof(pp));
++	off += sizeof(pp);
++	memcpy(out + off, priv + sizeof(pp), subset.n_keep * sizeof(struct subset_device_priv));
++	off += subset.n_keep * sizeof(struct subset_device_priv);
++
++	for (size_t i = 0; i < e->n_bo_entries; i++) {
++		KfdBoEntry *b = e->bo_entries[i];
++		struct subset_bo_priv bp;
++		uint32_t m = 0;
++
++		if (subset_is_dropped(b->gpu_id)) {
++			if (!(b->alloc_flags & KFD_IOC_ALLOC_MEM_FLAGS_MMIO_REMAP) ||
++			    subset.n_mmio >= SUBSET_MAX_GPU_INSTANCE) {
++				pr_err("subset: unexpected BO on dropped GPU 0x%04x\n", b->gpu_id);
++				goto inval;
++			}
++			subset.mmio[subset.n_mmio++] = b;
++			continue;
++		}
++		bos[n_bos++] = b;
++
++		memcpy(&bp, priv + bo_off + i * sizeof(bp), sizeof(bp));
++		for (uint32_t k = 0; k < SUBSET_MAX_GPU_INSTANCE && bp.mapped_gpuids[k]; k++)
++			if (!subset_is_dropped(bp.mapped_gpuids[k]))
++				bp.mapped_gpuids[m++] = bp.mapped_gpuids[k];
++		for (uint32_t k = m; k < SUBSET_MAX_GPU_INSTANCE; k++)
++			bp.mapped_gpuids[k] = 0;
++		memcpy(out + off, &bp, sizeof(bp));
++		off += sizeof(bp);
++	}
++
++	{
++		struct rewrite_ctx r = { out, off };
++
++		if (!walk_objects(priv, len, obj_off, e->num_of_objects, e->num_of_gpus, rewrite_obj, &r))
++			goto inval;
++		off = r.off;
++	}
++
++	subset.orig_num_gpus = e->num_of_gpus;
++	subset.orig_n_device_entries = e->n_device_entries;
++	subset.orig_device_entries = e->device_entries;
++	subset.orig_num_bos = e->num_of_bos;
++	subset.orig_n_bo_entries = e->n_bo_entries;
++	subset.orig_bo_entries = e->bo_entries;
++	subset.orig_priv_data = e->priv_data;
++
++	e->num_of_gpus = subset.n_keep;
++	e->n_device_entries = n_devs;
++	e->device_entries = devs;
++	e->num_of_bos = n_bos;
++	e->n_bo_entries = n_bos;
++	e->bo_entries = bos;
++	e->priv_data.data = out;
++	e->priv_data.len = off;
++
++	pr_info("subset: restoring %u GPUs, %zu BOs, private data %zu -> %zu bytes\n", subset.n_keep, n_bos,
++		len, off);
++	return 0;
++
++nomem:
++	xfree(devs);
++	xfree(bos);
++	xfree(out);
++	subset.active = false;
++	return -ENOMEM;
++inval:
++	xfree(devs);
++	xfree(bos);
++	xfree(out);
++	subset.active = false;
++	return -EINVAL;
++}
++
++void subset_fix_src_topology(struct tp_system *src)
++{
++	struct tp_node *node;
++
++	if (!kfd_restore_gpu_subset)
++		return;
++
++	/*
++	 * Count only the links whose peer is in the checkpoint. The stored
++	 * io_links_count is the raw sysfs value, which also counts links to
++	 * nodes the dump could not see (a device cgroup that exposes one CPX
++	 * partition: 15 links stored as 1) and links to GPUs dropped above.
++	 * Neither is restored, so neither may take part in the match.
++	 */
++	list_for_each_entry(node, &src->nodes, listm_system) {
++		struct tp_iolink *iolink;
++		uint32_t n = 0;
++
++		if (!node->gpu_id)
++			continue;
++		list_for_each_entry(iolink, &node->iolinks, listm) {
++			struct tp_node *peer;
++			bool present = false;
++
++			list_for_each_entry(peer, &src->nodes, listm_system)
++				if (peer->id == iolink->node_to_id)
++					present = true;
++			n += present;
++		}
++		if (n != node->io_links_count)
++			pr_info("subset: src GPU 0x%04x io_links_count %u -> %u\n", node->gpu_id,
++				node->io_links_count, n);
++		node->io_links_count = n;
++	}
++}
++
++void subset_undo(CriuKfd *e)
++{
++	if (!subset.active || !subset.orig_device_entries)
++		return;
++
++	xfree(e->device_entries);
++	xfree(e->bo_entries);
++	xfree(e->priv_data.data);
++
++	e->num_of_gpus = subset.orig_num_gpus;
++	e->n_device_entries = subset.orig_n_device_entries;
++	e->device_entries = subset.orig_device_entries;
++	e->num_of_bos = subset.orig_num_bos;
++	e->n_bo_entries = subset.orig_n_bo_entries;
++	e->bo_entries = subset.orig_bo_entries;
++	e->priv_data = subset.orig_priv_data;
++
++	/* The MMIO BO entries now belong to the original message again. */
++	subset.orig_device_entries = NULL;
++}
++
++uint32_t subset_num_dropped_mmio(void)
++{
++	return subset.active ? subset.n_mmio : 0;
++}
++
++const KfdBoEntry *subset_dropped_mmio(uint32_t i)
++{
++	return i < subset.n_mmio ? subset.mmio[i] : NULL;
++}
++
++struct kfd_criu_bo_bucket *subset_mmio_stand_in(struct kfd_criu_bo_bucket *bo_buckets, uint64_t num_bos,
++						uint32_t alias)
++{
++	for (uint64_t k = 0; k < num_bos; k++)
++		if (bo_buckets[k].gpu_id == alias && (bo_buckets[k].alloc_flags & KFD_IOC_ALLOC_MEM_FLAGS_MMIO_REMAP))
++			return &bo_buckets[k];
++	return NULL;
++}
+diff --git a/plugins/amdgpu/amdgpu_plugin_subset.h b/plugins/amdgpu/amdgpu_plugin_subset.h
+new file mode 100644
+index 000000000..8095d6d78
+--- /dev/null
++++ b/plugins/amdgpu/amdgpu_plugin_subset.h
+@@ -0,0 +1,88 @@
++#ifndef __AMDGPU_PLUGIN_SUBSET_H__
++#define __AMDGPU_PLUGIN_SUBSET_H__
++
++/*
++ * Restore onto a subset of the checkpointed GPUs.
++ *
++ * Built only into amdgpu_plugin_gem5.so (-DAMDGPU_PLUGIN_GEM5, the plugin
++ * for restoring MI300X checkpoints in a gem5 GPU full-system guest), where it
++ * is on by default (KFD_RESTORE_GPU_SUBSET=0 turns it off). The stock
++ * amdgpu_plugin.so is built without it: the stubs below compile the hooks
++ * away and it restores every checkpointed GPU, as upstream CRIU does.
++ *
++ * The ROCm runtime opens every visible GPU, so a process that only computes
++ * on one GPU of a multi-GPU node is checkpointed with a KFD process device
++ * (pdd) for every GPU. Stock restore needs an identical number of GPUs on the
++ * destination. With KFD_RESTORE_GPU_SUBSET=1, GPUs that hold no state other
++ * than their MMIO-remap page (no queues, no VRAM/GTT/userptr/doorbell BOs,
++ * never a preferred/prefetch/access location of an SVM range) are left out
++ * of the restore:
++ *  - their device entries and MMIO-remap BOs are not restored,
++ *  - they are removed from every BO's mapped_gpuids list and from the SVM
++ *    accessibility attributes in the KFD private data passed to the kernel,
++ *  - their render-node fds and MMIO-page CPU mappings are redirected to the
++ *    GPU that replaces a kept GPU of the same XGMI hive.
++ * The image files are not modified; everything is rewritten in memory.
++ *
++ * Rewriting the private data depends on the KFD's private CRIU layout
++ * (KFD_CRIU_PRIV_VERSION 1); the code refuses any other version or a blob
++ * that does not parse exactly.
++ */
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include "common/list.h"
++#include "criu-amdgpu.pb-c.h"
++#include "kfd_ioctl.h"
++#include "amdgpu_plugin_topology.h"
++
++#ifdef AMDGPU_PLUGIN_GEM5
++
++extern bool kfd_restore_gpu_subset;
++
++/*
++ * Select the GPUs to keep and filter e->device_entries / e->bo_entries and
++ * e->priv_data in place (the originals are kept for subset_undo()).
++ * Returns 0 when nothing was dropped or on success, negative errno on error.
++ */
++int subset_apply(CriuKfd *e);
++
++/* Count only restorable links in io_links_count of the source GPUs (after devinfo_to_topology()). */
++void subset_fix_src_topology(struct tp_system *src);
++
++/* Put back the original arrays so criu_kfd__free_unpacked() frees them. */
++void subset_undo(CriuKfd *e);
++
++/* True if gpu_id was a checkpointed GPU that subset_apply() dropped. */
++bool subset_is_dropped(uint32_t gpu_id);
++
++/* Kept source GPU that stands in for a dropped one (0 if none). */
++uint32_t subset_alias(uint32_t dropped_gpu_id);
++
++/* Dropped GPUs' MMIO-remap BOs, whose CPU mappings must be redirected. */
++uint32_t subset_num_dropped_mmio(void);
++const KfdBoEntry *subset_dropped_mmio(uint32_t i);
++
++/* Restored MMIO-remap BO of the kept GPU alias, used as the stand-in page. */
++struct kfd_criu_bo_bucket *subset_mmio_stand_in(struct kfd_criu_bo_bucket *bo_buckets, uint64_t num_bos,
++						uint32_t alias);
++
++#else /* !AMDGPU_PLUGIN_GEM5: stock plugin, restore all checkpointed GPUs */
++
++static inline int subset_apply(CriuKfd *e) { return 0; }
++static inline void subset_fix_src_topology(struct tp_system *src) {}
++static inline void subset_undo(CriuKfd *e) {}
++static inline bool subset_is_dropped(uint32_t gpu_id) { return false; }
++static inline uint32_t subset_alias(uint32_t dropped_gpu_id) { return 0; }
++static inline uint32_t subset_num_dropped_mmio(void) { return 0; }
++static inline const KfdBoEntry *subset_dropped_mmio(uint32_t i) { return NULL; }
++static inline struct kfd_criu_bo_bucket *subset_mmio_stand_in(struct kfd_criu_bo_bucket *bo_buckets,
++							      uint64_t num_bos, uint32_t alias)
++{
++	return NULL;
++}
++
++#endif /* AMDGPU_PLUGIN_GEM5 */
++
++#endif
+diff --git a/plugins/amdgpu/amdgpu_plugin_topology.c b/plugins/amdgpu/amdgpu_plugin_topology.c
+index 5b4396a0c..687e44e4f 100644
+--- a/plugins/amdgpu/amdgpu_plugin_topology.c
++++ b/plugins/amdgpu/amdgpu_plugin_topology.c
+@@ -1077,6 +1077,14 @@ static bool map_device(struct tp_system *src_sys, struct tp_system *dest_sys, st
+ 	}
+ 
+ 	list_for_each_entry(src_iolink, &src_node->iolinks, listm) {
++#ifdef AMDGPU_PLUGIN_GEM5
++		/* Links to GPUs left out by the subset restore have no node_to;
++		 * they are not restored and need no match (see iolink_match()).
++		 */
++		if (!src_iolink->valid)
++			continue;
++#endif
++
+ 		/* Go through list of iolinks to CPU and compare them */
+ 
+ 		if (!NODE_IS_GPU(src_iolink->node_to)) {
+-- 
+2.43.0
+

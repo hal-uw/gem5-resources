@@ -8,11 +8,12 @@ taken right before a chosen kernel launch. The application needs no changes.
 | Path | What it is |
 |---|---|
 | `criu/` | Submodule: upstream CRIU, pinned to `v4.0` |
-| `criu-patches/` | Patches applied to `criu/` by `build.sh`, in name order |
+| `criu-patches/` | Patches applied to `criu/` by `build.sh`, in name order (see [CRIU patches](#criu-patches)) |
 | `klHook/` | Submodule: LD_PRELOAD hook for HIP launches; pauses before the selected kernel |
-| `build.sh` | Applies the patches and builds criu, the amdgpu plugin and `libklhook.so` |
+| `build.sh` | Applies the patches and builds criu, both amdgpu plugins and `libklhook.so` |
 | `gpu_checkpoint.py` | `checkpoint`: runs an app and checkpoints it; `restore`: restores it, on the host or in the gem5 guest |
 | `run_gem5_restore.sh` | Boots the gem5 guest and runs `gpu_checkpoint.py restore` in it |
+| `make_1xcc_ipt.py` | Makes the single-XCC IP-discovery binary the gem5 guest needs for a CPX checkpoint |
 
 ## Setup
 
@@ -48,7 +49,9 @@ src/gpu-fs/gpu_checkpoint.py restore <checkpoint-dir>
   so must every file the app had mapped (binary, ROCm libraries,
   `libklhook.so`).
 - Environment variables: `GPU` (PCI address, default `0000:f6:00.0`), `PART`
-  (CPX partition 0-7, default 0), `CRIU`, `PLUGIN`, `KLHOOK`.
+  (CPX partition 0-7, default 0), `CRIU`, `PLUGIN` (plugin directory: by
+  default `criu/plugins/amdgpu` for checkpoints and native restores,
+  `criu/plugins/amdgpu/gem5` for restores in the gem5 guest), `KLHOOK`.
 
 ### Why CPX
 
@@ -63,10 +66,60 @@ The app and criu run in a device cgroup that allows only `/dev/kfd` and one
 partition's render node. KFD filters its topology by the caller's device
 cgroup, so both see a single GPU, and the checkpoint holds exactly one GPU.
 
-### gem5
+## CRIU patches
+
+`criu-patches/0001-plugins-amdgpu-add-amdgpu_plugin_gem5.patch` makes
+`make amdgpu_plugin` build two plugins from the same sources:
+
+| Plugin | `-L` directory | Use |
+|---|---|---|
+| `amdgpu_plugin.so` | `criu/plugins/amdgpu` | Stock upstream behaviour. Checkpoints, and restores on the MI300X |
+| `amdgpu_plugin_gem5.so` | `criu/plugins/amdgpu/gem5` | Restores in the gem5 guest |
+
+CRIU loads every plugin in its `-L` directory, so the two are built in
+separate directories; never put both in one. `amdgpu_plugin_gem5` differs
+from the stock plugin in three ways:
+
+- It restores onto the subset of the checkpointed GPUs that hold state (on by
+  default; `KFD_RESTORE_GPU_SUBSET=0` turns it off). A process on one GPU of
+  an 8-GPU node is checkpointed with all 8 GPUs, because ROCm opens every
+  visible GPU, and the stock plugin then needs all 8 at restore. GPUs that
+  hold nothing but their MMIO-remap page are left out. The image files are
+  not changed. A checkpoint made by `gpu_checkpoint.py` holds one GPU, so
+  nothing is left out.
+- It counts only the GPU links it restores in the topology match. In a
+  device cgroup the dump stores the raw link count of the partition (15 on an
+  MI300X in CPX) but only the one link it can see; gem5's GPU has one link.
+- It writes the SDMA `COPY_LINEAR` count as bytes - 1 on MI300X, as the
+  kernel driver does. Upstream writes the byte count, which copies one byte
+  past each buffer; gem5's SDMA model executes exactly that and corrupts the
+  restored GPU memory.
+
+## gem5
 
 `gpu_checkpoint.py restore` restores directly when `amd-smi` is not present, as in
-the gem5 guest, and copies `app.log` and `restore.log` out with
-`m5 writefile`. `run_gem5_restore.sh <outdir> <checkpoint-dir-in-guest>` boots the
-guest and runs it there (the guest needs `python3`). The guest image needs the
-checkpoint and every file the app had mapped at the same paths.
+the gem5 guest, with `amdgpu_plugin_gem5`, and copies `app.log` and
+`restore.log` out with `m5 writefile`.
+`run_gem5_restore.sh <outdir> <checkpoint-dir-in-guest>` boots the guest and
+runs it there (the guest needs `python3`).
+
+- **Files.** The guest image needs the checkpoint and every file the app had
+  mapped at the same paths, byte for byte: binary, inputs it still has open,
+  ROCm libraries, `libklhook.so`. Keep their owners and modes (the restored
+  app runs with the checkpoint's uid and gid; it must be able to write in its
+  cwd, for example a result file).
+- **GPU shape.** CRIU restores only onto a GPU with the same SIMD, shader
+  array and SDMA counts. A CPX checkpoint holds one XCC (38 CUs, 4 arrays,
+  2 SDMA engines), so the guest must see a single-XCC MI300X:
+  ```sh
+  src/gpu-fs/make_1xcc_ipt.py <8-XCC ipt binary> mi300x_1xcc_discovery.bin
+  ```
+  `run_gem5_restore.sh` passes it to gem5 with `--ipt-binary`; set `IPT` to
+  use another binary.
+- **Property checks.** The restore skips the checks where gem5's MI300X
+  differs from the real one: MEC firmware version (`KFD_FW_VER_CHECK=0`; the
+  host's may be newer than gem5's), SDMA firmware version, RAS capability
+  bits, VRAM size and cache count.
+- **Exit status.** `criu restore` returns 0 once the restore succeeded,
+  whatever the app does afterwards. Check the app's output, and `dmesg` in
+  the guest for a crash.

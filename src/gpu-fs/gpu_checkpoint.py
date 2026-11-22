@@ -13,13 +13,16 @@ yet) right before a kernel launch:
 The app's output goes to DIR/app.log. DIR must keep its absolute path.
 
 restore restores DIR and waits for the app to exit. On the MI300X host it
-restores onto a CPX partition again; without amd-smi (the gem5 guest) it
-restores directly and copies the logs out with m5 writefile.
+restores onto a CPX partition again with the stock amdgpu plugin; without
+amd-smi (the gem5 guest) it restores directly with amdgpu_plugin_gem5 and
+copies the logs out with m5 writefile.
 
 On the host the GPU is CPX during the run and SPX afterwards: amdgpu-dkms 7.1.9
 cannot restore queues of multi-XCC GPUs. The app and criu share a device cgroup
 with only that partition, so the checkpoint holds one GPU.
-Env: GPU (PCI address), PART (CPX partition 0-7), CRIU, PLUGIN, KLHOOK.
+Env: GPU (PCI address), PART (CPX partition 0-7), CRIU, PLUGIN (plugin
+directory; default criu/plugins/amdgpu, or criu/plugins/amdgpu/gem5 for a
+restore in the gem5 guest), KLHOOK.
 """
 import argparse
 import glob
@@ -34,7 +37,11 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 GPU = os.environ.get("GPU", "0000:f6:00.0")
 PART = int(os.environ.get("PART", "0"))
 CRIU = os.environ.get("CRIU", os.path.join(HERE, "criu/criu/criu"))
-PLUGIN = os.environ.get("PLUGIN", os.path.join(HERE, "criu/plugins/amdgpu"))
+# CRIU loads every plugin in its -L directory: the stock amdgpu plugin and
+# amdgpu_plugin_gem5 (criu-patches/) are built in separate directories.
+PLUGIN_STOCK = os.path.join(HERE, "criu/plugins/amdgpu")
+PLUGIN_GEM5 = os.path.join(HERE, "criu/plugins/amdgpu/gem5")
+PLUGIN = os.environ.get("PLUGIN")
 KLHOOK = os.environ.get("KLHOOK", os.path.join(HERE, "klHook/libklhook.so"))
 SUDO = [] if os.geteuid() == 0 else ["sudo"]
 CRIU_OPTS = ["--link-remap", "--tcp-established", "--file-locks"]
@@ -133,7 +140,7 @@ def checkpoint(args):
 
         sudo("systemd-run", "--quiet", "--scope", *dev, CRIU, "dump", "-t", pid,
              "-D", d, "-v4", "-o", "dump.log", *CRIU_OPTS, "--unprivileged",
-             "-L", PLUGIN, *(["--leave-running"] if args.cont else []))
+             "-L", PLUGIN or PLUGIN_STOCK, *(["--leave-running"] if args.cont else []))
         imgs = glob.glob(os.path.join(d, "*.img"))
         sudo("chown", f"{os.getuid()}:{os.getgid()}", *imgs,
              os.path.join(d, "dump.log"), log)
@@ -168,17 +175,20 @@ def restore(args):
     shutil.copy2("app.log.at-dump", "app.log")  # criu checks the size of app.log
 
     native = shutil.which("amd-smi") and os.path.exists(f"/sys/bus/pci/devices/{GPU}")
+    plugin = PLUGIN or (PLUGIN_STOCK if native else PLUGIN_GEM5)
     try:
         prefix = []
         if native:
             set_partition("CPX")
             prefix = ["systemd-run", "--quiet", "--scope", *device_cgroup(render_node())]
-        # Skip the checks where gem5's MI300X differs from the real one.
-        checks = ["KFD_SDMA_FW_VER_CHECK=0", "KFD_CAPABILITY_CHECK=0",
-                  "KFD_VRAM_SIZE_CHECK=0", "KFD_CACHES_COUNT_CHECK=0"]
+        # Skip the checks where gem5's MI300X differs from the real one: MEC
+        # and SDMA firmware versions, RAS capability bits, VRAM size, caches.
+        checks = ["KFD_FW_VER_CHECK=0", "KFD_SDMA_FW_VER_CHECK=0",
+                  "KFD_CAPABILITY_CHECK=0", "KFD_VRAM_SIZE_CHECK=0",
+                  "KFD_CACHES_COUNT_CHECK=0"]
         rc = sudo(*prefix, "env", *checks, CRIU, "restore", "-D", d, "-v4",
                   "-o", "restore.log", *CRIU_OPTS, "--skip-file-rwx-check",
-                  "-L", PLUGIN, check=False).returncode
+                  "-L", plugin, check=False).returncode
         print(f"criu restore exit {rc}", flush=True)
         with open("app.log") as f:
             sys.stdout.write(f.read())
