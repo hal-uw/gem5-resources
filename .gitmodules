@@ -1,0 +1,6 @@
+[submodule "src/gpu-fs/criu"]
+	path = src/gpu-fs/criu
+	url = https://github.com/checkpoint-restore/criu.git
+[submodule "src/gpu-fs/klHook"]
+	path = src/gpu-fs/klHook
+	url = https://github.com/abmerop/klHook.git
