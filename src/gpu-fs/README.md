@@ -9,9 +9,10 @@ taken right before a chosen kernel launch. The application needs no changes.
 |---|---|
 | `criu/` | Submodule: upstream CRIU, pinned to `v4.0` |
 | `criu-patches/` | Patches applied to `criu/` by `build.sh`, in name order (see [CRIU patches](#criu-patches)) |
-| `klHook/` | Submodule: LD_PRELOAD hook for HIP launches; pauses before the selected kernel |
+| `klHook/` | Submodule: upstream klHook (LD_PRELOAD hook for HIP launches), pinned to its `main` |
+| `klhook-patches/` | Patches applied to `klHook/` by `build.sh`, in name order (see [klHook patches](#klhook-patches)) |
 | `build.sh` | Applies the patches and builds criu, both amdgpu plugins and `libklhook.so` |
-| `gpu_checkpoint.py` | `checkpoint`: runs an app and checkpoints it; `restore`: restores it, on the host or in the gem5 guest |
+| `gpu_checkpoint.py` | `profile`: lists an app's kernels and launch counts; `checkpoint`: runs an app and checkpoints it; `restore`: restores it, on the host or in the gem5 guest |
 | `run_gem5_restore.sh` | Boots the gem5 guest and runs `gpu_checkpoint.py restore` in it |
 | `make_1xcc_ipt.py` | Makes the single-XCC IP-discovery binary the gem5 guest needs for a CPX checkpoint |
 
@@ -30,10 +31,15 @@ ROCm comes from `/opt/rocm` (override it with `ROCM_PATH`).
 ## Checkpoint and restore
 
 ```sh
+src/gpu-fs/gpu_checkpoint.py profile <app> [args...]
 src/gpu-fs/gpu_checkpoint.py checkpoint --kernel <kernel>[:<n>] [--continue] <checkpoint-dir> <app> [args...]
 src/gpu-fs/gpu_checkpoint.py restore <checkpoint-dir>
 ```
 
+- `profile` runs the app the same way `checkpoint` does (same CPX partition,
+  cgroup and environment) without checkpointing, then prints every kernel's
+  base name and launch count: what `--kernel <kernel>:<n>` picks from. Library
+  kernels (e.g. hipBLASLt GEMMs) can differ between CPX and the full GPU.
 - `--kernel <kernel>[:<n>]` (or `KL_CKPT_KERNEL`) checkpoints right before
   the n-th launch (default 1st) of the kernel, matched by its base name or its
   mangled name. `KL_HOOK_VERBOSE=1` prints every launched kernel's name.
@@ -44,7 +50,7 @@ src/gpu-fs/gpu_checkpoint.py restore <checkpoint-dir>
 - `restore` waits for the restored app to exit and prints its output.
 - After a restore, klHook notices on its own that it was restored and launches
   the kernel.
-- The app's output goes to `<checkpoint-dir>/app.log`. The checkpoint must stay at
+- The app runs in the current directory. Its output goes to `<checkpoint-dir>/app.log`. The checkpoint must stay at
   the same absolute path (it holds the app's cwd and its open `app.log`), and
   so must every file the app had mapped (binary, ROCm libraries,
   `libklhook.so`).
@@ -52,6 +58,10 @@ src/gpu-fs/gpu_checkpoint.py restore <checkpoint-dir>
   (CPX partition 0-7, default 0), `CRIU`, `PLUGIN` (plugin directory: by
   default `criu/plugins/amdgpu` for checkpoints and native restores,
   `criu/plugins/amdgpu/gem5` for restores in the gem5 guest), `KLHOOK`.
+  `KL_HOOK_*` variables are passed on to klHook; an app that brings its own
+  ROCm (e.g. a PyTorch wheel) needs `KL_HOOK_HIP_LIB_PATH` and
+  `KL_HOOK_HSA_LIB_PATH` pointing at its `libamdhip64.so` and
+  `libhsa-runtime64.so`.
 
 ### Why CPX
 
@@ -94,6 +104,15 @@ from the stock plugin in three ways:
   kernel driver does. Upstream writes the byte count, which copies one byte
   past each buffer; gem5's SDMA model executes exactly that and corrupts the
   restored GPU memory.
+
+## klHook patches
+
+Upstream klHook only prints hooked calls. `build.sh` applies:
+
+| Patch | Adds |
+|---|---|
+| `0001-Checkpoint-support-…` | `KL_CKPT_KERNEL`/`KL_CKPT_READY`/`KL_CKPT_GO`: drain the GPU and wait right before the selected launch; continue when told to or when restored. Hooks `hipLaunchKernelExC`, `hipLaunchCooperativeKernel` and `hipExtLaunchKernel` too |
+| `0002-Support-PyTorch-kernels-…` | Base names for kernels in anonymous namespaces or with lambdas; `KL_HOOK_COUNTS` (used by `profile`); builds with `--as-needed` so an app's own HIP runtime is the only one loaded |
 
 ## gem5
 

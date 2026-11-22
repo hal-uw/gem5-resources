@@ -1,0 +1,333 @@
+From b185ebbacfa3d029fffa4d460d3c6820c45719f2 Mon Sep 17 00:00:00 2001
+From: g893user
+ <g893user@node0.g893user-324305.chipletgpu-pg0.wisc.cloudlab.us>
+Date: Sun, 22 Nov 2026 18:25:39 +0000
+Subject: [PATCH 1/2] Checkpoint support: pause before a selected kernel launch
+
+kl_should_checkpoint() picks the launch (KL_CKPT_KERNEL=<name>[:<n>]).
+At that launch the hook drains the GPU, creates KL_CKPT_READY and waits
+until KL_CKPT_GO exists or it finds itself restored by CRIU (its start
+time changes). Also hook hipLaunchKernelExC, hipLaunchCooperativeKernel
+and hipExtLaunchKernel, and print kernel names with KL_HOOK_VERBOSE=1.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .gitignore |   1 +
+ README.md  |  23 ++++++
+ klhook.cc  | 211 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 235 insertions(+)
+ create mode 100644 .gitignore
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..0433722
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1 @@
++libklhook.so
+diff --git a/README.md b/README.md
+index 5330727..c1067e8 100644
+--- a/README.md
++++ b/README.md
+@@ -33,3 +33,26 @@ The following environment variables are checked:
+ - `export KL_HOOK_HIP_PATH="/opt/rocm/lib/libamdhip64.so"`: Specify a custom location of the HIP library to hook functions from.
+ - `export KL_HOOK_HSA_PATH="/opt/rocm/lib/libhsa-runtime64.so"`: Specify a custom location of the HSA library to hook functions from.
+ 
++
++## Checkpointing before a kernel
++
++The hook can pause the app right before a chosen kernel launch so that a
++checkpointer (CRIU) can dump it. `kl_should_checkpoint()` in klhook.cc is the
++only place that picks the launch. At that launch the hook drains the GPU
++(`hipDeviceSynchronize`), creates `KL_CKPT_READY` and waits. It continues once
++`KL_CKPT_GO` exists or once it finds itself restored (its start time in
++`/proc/self/stat` changes).
++
++- `export KL_CKPT_KERNEL="vector_square:2"`: checkpoint before the 2nd launch of
++  `vector_square`. The name is the kernel's base name or its mangled name.
++  The launch count defaults to 1.
++- `export KL_CKPT_READY=<file>`: created by the hook when the app is ready to dump.
++  Without it the hook only warns and does not pause.
++- `export KL_CKPT_GO=<file>`: optional. The hook continues once this exists.
++
++`gem5-resources/src/gpu-fs/criu/kl-ckpt.sh` sets all of these and runs CRIU:
++
++```sh
++KL_CKPT_KERNEL=vector_square:2 kl-ckpt.sh [--continue] <ckpt-dir> ./square
++restore.sh <ckpt-dir>
++```
+diff --git a/klhook.cc b/klhook.cc
+index 9557c66..34531c4 100644
+--- a/klhook.cc
++++ b/klhook.cc
+@@ -1,10 +1,15 @@
+ // Copyright (c) 2026 Matt Poremba
+ // SPDX-License-Identifier: MIT
+ #include <cstdint>
++#include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <cxxabi.h>
+ #include <dlfcn.h>
+ #include <iostream>
++#include <mutex>
++#include <string>
++#include <unistd.h>
+ #include <unordered_map>
+ 
+ #include "hip/hip_runtime.h"
+@@ -20,6 +25,13 @@ decltype(::hipMemcpyWithStream)* hipMemcpyWithStream_func;
+ decltype(::hipLaunchKernel)* hipLaunchKernel_func;
+ decltype(::hipModuleLaunchKernel)* hipModuleLaunchKernel_func;
+ decltype(::hipExtModuleLaunchKernel)* hipExtModuleLaunchKernel_func;
++decltype(::hipLaunchKernelExC)* hipLaunchKernelExC_func;
++hipError_t (*hipLaunchCooperativeKernel_func)(const void*, dim3, dim3, void**, unsigned int, hipStream_t);
++hipError_t (*hipExtLaunchKernel_func)(const void*, dim3, dim3, void**, size_t, hipStream_t,
++                                      hipEvent_t, hipEvent_t, int);
++decltype(::hipKernelNameRef)* hipKernelNameRef_func;
++decltype(::hipKernelNameRefByPtr)* hipKernelNameRefByPtr_func;
++decltype(::hipDeviceSynchronize)* hipDeviceSynchronize_func;
+ 
+ decltype(hsa_memory_allocate)* hsa_memory_allocate_func;
+ decltype(hsa_memory_free)* hsa_memory_free_func;
+@@ -75,6 +87,19 @@ void init_hooks()
+     hipExtModuleLaunchKernel_func = (decltype(::hipExtModuleLaunchKernel)*)dlsym(hip_handle, "_Z24hipExtModuleLaunchKernelP18ihipModuleSymbol_tjjjjjjmP12ihipStream_tPPvS4_P11ihipEvent_tS6_j");
+     if (!hipExtModuleLaunchKernel_func) { std::cerr << "Failed to load hipExtModuleLaunchKernel: " << dlerror() << std::endl; exit(EXIT_FAILURE); }
+ 
++    hipLaunchKernelExC_func = (decltype(::hipLaunchKernelExC)*)dlsym(hip_handle, "hipLaunchKernelExC");
++    hipLaunchCooperativeKernel_func = (decltype(hipLaunchCooperativeKernel_func))dlsym(hip_handle, "hipLaunchCooperativeKernel");
++    hipExtLaunchKernel_func = (decltype(hipExtLaunchKernel_func))dlsym(hip_handle, "hipExtLaunchKernel");
++
++    // Needed for checkpointing (kernel names, draining the GPU)
++    hipKernelNameRef_func = (decltype(::hipKernelNameRef)*)dlsym(hip_handle, "hipKernelNameRef");
++    hipKernelNameRefByPtr_func = (decltype(::hipKernelNameRefByPtr)*)dlsym(hip_handle, "hipKernelNameRefByPtr");
++    hipDeviceSynchronize_func = (decltype(::hipDeviceSynchronize)*)dlsym(hip_handle, "hipDeviceSynchronize");
++    if (!hipKernelNameRef_func || !hipKernelNameRefByPtr_func || !hipDeviceSynchronize_func) {
++        std::cerr << "Failed to load hipKernelNameRef/hipKernelNameRefByPtr/hipDeviceSynchronize" << std::endl;
++        exit(EXIT_FAILURE);
++    }
++
+ 
+     // HSA memory functions
+     const char *kl_hook_hsa_path = std::getenv("KL_HOOK_HSA_LIB_PATH");
+@@ -119,6 +144,145 @@ void init_hooks()
+ }
+ 
+ 
++// ---------------------------------------------------------------------------
++// Checkpointing: before a selected kernel launch, drain the GPU and hand the
++// process to a checkpointer (e.g. kl-ckpt.sh), then launch once released.
++//
++// Handshake (all paths from the environment):
++//   KL_CKPT_READY  the hook creates this file (containing its pid) when the
++//                  process is ready to be dumped
++//   KL_CKPT_GO     optional; the hook continues once this file exists
++//                  (checkpointer dumped with --leave-running)
++// The hook also continues once it finds itself restored: a restored process
++// is a new process, so its start time in /proc/self/stat changes.
++// ---------------------------------------------------------------------------
++
++// Base name of a kernel: "void ns::foo<float>(float*)" or its mangled form -> "foo".
++static std::string kernel_base_name(const char *name)
++{
++    int status = 0;
++    char *demangled = abi::__cxa_demangle(name, nullptr, nullptr, &status);
++    std::string s = (status == 0 && demangled) ? demangled : name;
++    free(demangled);
++
++    s = s.substr(0, s.find('('));                   // argument list
++    if (!s.empty() && s.back() == '>') {            // template arguments
++        int depth = 0;
++        size_t i = s.size();
++        while (i-- > 0) {
++            if (s[i] == '>') depth++;
++            else if (s[i] == '<' && --depth == 0) break;
++        }
++        s = s.substr(0, i);
++    }
++    size_t pos = s.rfind(' ');                      // return type
++    if (pos != std::string::npos) s = s.substr(pos + 1);
++    pos = s.rfind("::");                            // namespaces / classes
++    if (pos != std::string::npos) s = s.substr(pos + 2);
++    return s;
++}
++
++// Selection policy, the only place that decides which launch is checkpointed.
++// Current policy: KL_CKPT_KERNEL=<name>[:<n>] selects the n-th launch (default
++// 1st) of the kernel whose base name or mangled name is <name>.
++static bool kl_should_checkpoint(const char *kernel_name)
++{
++    static std::mutex lock;
++    static bool parsed = false;
++    static std::string want;
++    static long nth = 1, seen = 0;
++
++    std::lock_guard<std::mutex> guard(lock);
++    if (!parsed) {
++        parsed = true;
++        if (const char *env = std::getenv("KL_CKPT_KERNEL")) {
++            want = env;
++            size_t colon = want.rfind(':');
++            if (colon != std::string::npos && colon + 1 < want.size() &&
++                want.find_first_not_of("0123456789", colon + 1) == std::string::npos) {
++                nth = std::atol(want.c_str() + colon + 1);
++                want.resize(colon);
++            }
++        }
++    }
++    if (want.empty() || !kernel_name) return false;
++    if (want != kernel_name && want != kernel_base_name(kernel_name)) return false;
++    return ++seen == nth;
++}
++
++// Field 22 (starttime) of /proc/self/stat.
++static unsigned long long process_start_time()
++{
++    char buf[1024];
++    FILE *f = fopen("/proc/self/stat", "r");
++    if (!f) return 0;
++    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
++    fclose(f);
++    buf[n] = '\0';
++
++    char *p = strrchr(buf, ')');                    // comm may contain spaces
++    if (!p) return 0;
++    int field = 2;
++    char *save = nullptr;
++    for (char *tok = strtok_r(p + 1, " ", &save); tok; tok = strtok_r(nullptr, " ", &save)) {
++        if (++field == 22) return strtoull(tok, nullptr, 10);
++    }
++    return 0;
++}
++
++static void kl_checkpoint(const char *kernel_name)
++{
++    const char *ready = std::getenv("KL_CKPT_READY");
++    const char *go = std::getenv("KL_CKPT_GO");
++    if (!ready) {
++        std::cerr << "kl-hook: KL_CKPT_READY not set, not checkpointing before "
++                  << kernel_name << std::endl;
++        return;
++    }
++
++    hipError_t err = hipDeviceSynchronize_func();
++    if (err != hipSuccess) {
++        std::cerr << "kl-hook: hipDeviceSynchronize failed (" << err << "), not checkpointing\n";
++        return;
++    }
++    std::cout << "kl-hook: checkpoint before kernel " << kernel_base_name(kernel_name) << std::endl;
++    fflush(nullptr);
++
++    unsigned long long start = process_start_time();
++    FILE *f = fopen(ready, "w");
++    if (!f) {
++        perror("kl-hook: KL_CKPT_READY");
++        return;
++    }
++    fprintf(f, "%d\n", getpid());
++    fclose(f);
++
++    for (;;) {
++        usleep(50000);
++        if (process_start_time() != start) {
++            std::cout << "kl-hook: restored" << std::endl;
++            break;
++        }
++        if (go && access(go, F_OK) == 0) break;
++    }
++}
++
++static bool ckpt_enabled()
++{
++    static const bool enabled = std::getenv("KL_CKPT_KERNEL") != nullptr;
++    return enabled;
++}
++
++// Called by every launch wrapper (when verbose or checkpointing is on).
++static void kl_on_launch(const char *kernel_name)
++{
++    if (verbose) {
++        std::cout << "kl-hook: kernel " << (kernel_name ? kernel_base_name(kernel_name) : "?") << "\n";
++    }
++    if (ckpt_enabled() && kl_should_checkpoint(kernel_name)) kl_checkpoint(kernel_name);
++}
++
++
+ // Some functions have C linkage
+ extern "C" {
+ 
+@@ -171,10 +335,55 @@ hipError_t hipLaunchKernel(const void* function_address,
+             std::cout << " -- No kernargs\n";
+         }
+     }
++    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRefByPtr_func(function_address, stream));
+ 
+     return hipLaunchKernel_func(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
+ }
+ 
++hipError_t hipLaunchKernelExC(const hipLaunchConfig_t* config, const void* fPtr, void** args)
++{
++    if (!initialized) init_hooks();
++    if (!hipLaunchKernelExC_func) return hipErrorNotSupported;
++
++    if (verbose) {
++        std::cout << "kl-hook: hipLaunchKernelExC called!\n\n";
++    }
++    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRefByPtr_func(fPtr, config ? config->stream : nullptr));
++
++    return hipLaunchKernelExC_func(config, fPtr, args);
++}
++
++hipError_t hipLaunchCooperativeKernel(const void* f, dim3 gridDim, dim3 blockDimX,
++                                      void** kernelParams, unsigned int sharedMemBytes,
++                                      hipStream_t stream)
++{
++    if (!initialized) init_hooks();
++    if (!hipLaunchCooperativeKernel_func) return hipErrorNotSupported;
++
++    if (verbose) {
++        std::cout << "kl-hook: hipLaunchCooperativeKernel called!\n\n";
++    }
++    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRefByPtr_func(f, stream));
++
++    return hipLaunchCooperativeKernel_func(f, gridDim, blockDimX, kernelParams, sharedMemBytes, stream);
++}
++
++hipError_t hipExtLaunchKernel(const void* function_address, dim3 numBlocks, dim3 dimBlocks,
++                              void** args, size_t sharedMemBytes, hipStream_t stream,
++                              hipEvent_t startEvent, hipEvent_t stopEvent, int flags)
++{
++    if (!initialized) init_hooks();
++    if (!hipExtLaunchKernel_func) return hipErrorNotSupported;
++
++    if (verbose) {
++        std::cout << "kl-hook: hipExtLaunchKernel called!\n\n";
++    }
++    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRefByPtr_func(function_address, stream));
++
++    return hipExtLaunchKernel_func(function_address, numBlocks, dimBlocks, args, sharedMemBytes,
++                                   stream, startEvent, stopEvent, flags);
++}
++
+ hipError_t hipModuleLaunchKernel(hipFunction_t f, unsigned int gridDimX, unsigned int gridDimY,
+                                  unsigned int gridDimZ, unsigned int blockDimX,
+                                  unsigned int blockDimY, unsigned int blockDimZ,
+@@ -189,6 +398,7 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f, unsigned int gridDimX, unsigne
+             std::cout << " -- No kernargs\n";
+         }
+     }
++    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRef_func(f));
+ 
+     return hipModuleLaunchKernel_func(f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ,
+                                       sharedMemBytes, stream, kernelParams, extra);
+@@ -217,6 +427,7 @@ hipError_t hipExtModuleLaunchKernel(hipFunction_t f, uint32_t globalWorkSizeX,
+             std::cout << " -- No kernargs\n";
+         }
+     }
++    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRef_func(f));
+ 
+     return hipExtModuleLaunchKernel_func(f, globalWorkSizeX, globalWorkSizeY, globalWorkSizeZ, localWorkSizeX,
+                                          localWorkSizeY, localWorkSizeZ, sharedMemBytes, hStream, kernelParams,
+-- 
+2.43.0
+

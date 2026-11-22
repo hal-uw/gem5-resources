@@ -1,0 +1,228 @@
+From 05703b3f0457f2357867c2e26071d615d32ea5eb Mon Sep 17 00:00:00 2001
+From: g893user
+ <g893user@node0.g893user-324305.chipletgpu-pg0.wisc.cloudlab.us>
+Date: Sun, 22 Nov 2026 23:16:48 +0000
+Subject: [PATCH 2/2] Support PyTorch kernels and count kernel launches
+
+Parse kernel base names that contain "(anonymous namespace)" or lambdas:
+cut the argument list at the first '(' outside template arguments.
+
+KL_HOOK_COUNTS=<file> counts launches per kernel base name and writes
+"<count>\t<name>" lines, most launched first, to <file> at exit.
+
+Build with -Wl,--as-needed: the hook dlopens HIP and HSA itself, and the
+libamdhip64 that hipcc links would be a second runtime next to an app's own
+(e.g. the one PyTorch bundles in torch/lib). Document KL_HOOK_HIP_LIB_PATH
+and KL_HOOK_HSA_LIB_PATH under their real names.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ README.md | 21 ++++++++++------
+ klhook.cc | 75 +++++++++++++++++++++++++++++++++++++++++++++++++------
+ 2 files changed, 81 insertions(+), 15 deletions(-)
+
+diff --git a/README.md b/README.md
+index c1067e8..4d679ef 100644
+--- a/README.md
++++ b/README.md
+@@ -8,11 +8,15 @@ It currently only (optionally) prints the function name if KL_HOOK_VERBOSE=1 is
+ Use this command on the machine you want to use the tool on:
+ 
+ ```sh
+-hipcc -std=c++17 -shared -fPIC -o libklhook.so klhook.cc -ldl
++hipcc -std=c++17 -shared -fPIC -Wl,--as-needed -o libklhook.so klhook.cc -ldl
+ ```
+ 
++`--as-needed` keeps hipcc from linking libamdhip64: the hook loads HIP and HSA
++itself, and a linked one would be a second runtime next to an app's own (e.g.
++the one bundled in PyTorch's `torch/lib`).
++
+ It defaults looking for HSA / HIP functions in /opt/rocm/.
+-See the environment variable if you have a non-standard ROCm install.
++See the environment variables if you have a non-standard ROCm install or the app brings its own.
+ You can use `ldd` on a GPU application to see where the libraries libamdhip64.s0 and libhsa-runtime64.so point to.
+ 
+ ## Running
+@@ -30,8 +34,10 @@ The library uses environment variables to control a few things since libraries c
+ The following environment variables are checked:
+ 
+ - `export KL_HOOK_VERBOSE=1`: Enable verbose printing of the hook library to print allocations, function calls, etc.
+-- `export KL_HOOK_HIP_PATH="/opt/rocm/lib/libamdhip64.so"`: Specify a custom location of the HIP library to hook functions from.
+-- `export KL_HOOK_HSA_PATH="/opt/rocm/lib/libhsa-runtime64.so"`: Specify a custom location of the HSA library to hook functions from.
++- `export KL_HOOK_HIP_LIB_PATH="/opt/rocm/lib/libamdhip64.so"`: Specify a custom location of the HIP library to hook functions from.
++- `export KL_HOOK_HSA_LIB_PATH="/opt/rocm/lib/libhsa-runtime64.so"`: Specify a custom location of the HSA library to hook functions from.
++- `export KL_HOOK_COUNTS=<file>`: Count launches per kernel base name and write
++  `<count><TAB><name>` lines, most launched first, to `<file>` when the app exits.
+ 
+ 
+ ## Checkpointing before a kernel
+@@ -50,9 +56,10 @@ only place that picks the launch. At that launch the hook drains the GPU
+   Without it the hook only warns and does not pause.
+ - `export KL_CKPT_GO=<file>`: optional. The hook continues once this exists.
+ 
+-`gem5-resources/src/gpu-fs/criu/kl-ckpt.sh` sets all of these and runs CRIU:
++`gem5-resources/src/gpu-fs/gpu_checkpoint.py` sets all of these and runs CRIU:
+ 
+ ```sh
+-KL_CKPT_KERNEL=vector_square:2 kl-ckpt.sh [--continue] <ckpt-dir> ./square
+-restore.sh <ckpt-dir>
++gpu_checkpoint.py profile ./square                 # kernel names and launch counts
++gpu_checkpoint.py checkpoint --kernel vector_square:2 [--continue] <ckpt-dir> ./square
++gpu_checkpoint.py restore <ckpt-dir>
+ ```
+diff --git a/klhook.cc b/klhook.cc
+index 34531c4..cb6adfe 100644
+--- a/klhook.cc
++++ b/klhook.cc
+@@ -1,5 +1,6 @@
+ // Copyright (c) 2026 Matt Poremba
+ // SPDX-License-Identifier: MIT
++#include <algorithm>
+ #include <cstdint>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -11,6 +12,7 @@
+ #include <string>
+ #include <unistd.h>
+ #include <unordered_map>
++#include <vector>
+ 
+ #include "hip/hip_runtime.h"
+ #include "hip/hip_ext.h"
+@@ -165,7 +167,15 @@ static std::string kernel_base_name(const char *name)
+     std::string s = (status == 0 && demangled) ? demangled : name;
+     free(demangled);
+ 
+-    s = s.substr(0, s.find('('));                   // argument list
++    const std::string anon = "(anonymous namespace)";
++    for (size_t p; (p = s.find(anon)) != std::string::npos;)
++        s.replace(p, anon.size(), "{anon}");
++    int angle = 0;                                  // argument list: first '('
++    for (size_t i = 0; i < s.size(); i++) {         // outside template arguments
++        if (s[i] == '<') angle++;
++        else if (s[i] == '>') angle--;
++        else if (s[i] == '(' && angle == 0) { s.resize(i); break; }
++    }
+     if (!s.empty() && s.back() == '>') {            // template arguments
+         int depth = 0;
+         size_t i = s.size();
+@@ -273,12 +283,61 @@ static bool ckpt_enabled()
+     return enabled;
+ }
+ 
+-// Called by every launch wrapper (when verbose or checkpointing is on).
++// KL_HOOK_COUNTS=<file>: count launches per kernel base name and write
++// "<count>\t<name>" lines, most launched first, to <file> at exit.
++static const char *counts_path()
++{
++    static const char *path = std::getenv("KL_HOOK_COUNTS");
++    return path;
++}
++
++static std::mutex counts_lock;
++// Heap-allocated so they outlive static destructors that run before atexit handlers.
++static auto *counts = new std::unordered_map<std::string, long>;
++static auto *base_names = new std::unordered_map<const char *, std::string>;
++
++static void write_counts()
++{
++    std::lock_guard<std::mutex> guard(counts_lock);
++    std::vector<std::pair<std::string, long>> v(counts->begin(), counts->end());
++    std::sort(v.begin(), v.end(), [](const auto &a, const auto &b) {
++        return a.second != b.second ? a.second > b.second : a.first < b.first;
++    });
++    FILE *f = fopen(counts_path(), "w");
++    if (!f) {
++        perror("kl-hook: KL_HOOK_COUNTS");
++        return;
++    }
++    for (const auto &[name, n] : v) fprintf(f, "%ld\t%s\n", n, name.c_str());
++    fclose(f);
++}
++
++static void count_launch(const char *kernel_name)
++{
++    std::lock_guard<std::mutex> guard(counts_lock);
++    static bool registered = false;
++    if (!registered) {  // after HIP's own atexit handlers, so this runs before them
++        registered = true;
++        atexit(write_counts);
++    }
++    auto it = base_names->find(kernel_name);  // names are stable pointers: demangle once
++    if (it == base_names->end())
++        it = base_names->emplace(kernel_name, kernel_name ? kernel_base_name(kernel_name) : "?").first;
++    ++(*counts)[it->second];
++}
++
++static bool hooked()
++{
++    return verbose || ckpt_enabled() || counts_path();
++}
++
++// Called by every launch wrapper (when verbose, checkpointing or counting is on).
+ static void kl_on_launch(const char *kernel_name)
+ {
+     if (verbose) {
+         std::cout << "kl-hook: kernel " << (kernel_name ? kernel_base_name(kernel_name) : "?") << "\n";
+     }
++    if (counts_path()) count_launch(kernel_name);
+     if (ckpt_enabled() && kl_should_checkpoint(kernel_name)) kl_checkpoint(kernel_name);
+ }
+ 
+@@ -335,7 +394,7 @@ hipError_t hipLaunchKernel(const void* function_address,
+             std::cout << " -- No kernargs\n";
+         }
+     }
+-    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRefByPtr_func(function_address, stream));
++    if (hooked()) kl_on_launch(hipKernelNameRefByPtr_func(function_address, stream));
+ 
+     return hipLaunchKernel_func(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
+ }
+@@ -348,7 +407,7 @@ hipError_t hipLaunchKernelExC(const hipLaunchConfig_t* config, const void* fPtr,
+     if (verbose) {
+         std::cout << "kl-hook: hipLaunchKernelExC called!\n\n";
+     }
+-    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRefByPtr_func(fPtr, config ? config->stream : nullptr));
++    if (hooked()) kl_on_launch(hipKernelNameRefByPtr_func(fPtr, config ? config->stream : nullptr));
+ 
+     return hipLaunchKernelExC_func(config, fPtr, args);
+ }
+@@ -363,7 +422,7 @@ hipError_t hipLaunchCooperativeKernel(const void* f, dim3 gridDim, dim3 blockDim
+     if (verbose) {
+         std::cout << "kl-hook: hipLaunchCooperativeKernel called!\n\n";
+     }
+-    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRefByPtr_func(f, stream));
++    if (hooked()) kl_on_launch(hipKernelNameRefByPtr_func(f, stream));
+ 
+     return hipLaunchCooperativeKernel_func(f, gridDim, blockDimX, kernelParams, sharedMemBytes, stream);
+ }
+@@ -378,7 +437,7 @@ hipError_t hipExtLaunchKernel(const void* function_address, dim3 numBlocks, dim3
+     if (verbose) {
+         std::cout << "kl-hook: hipExtLaunchKernel called!\n\n";
+     }
+-    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRefByPtr_func(function_address, stream));
++    if (hooked()) kl_on_launch(hipKernelNameRefByPtr_func(function_address, stream));
+ 
+     return hipExtLaunchKernel_func(function_address, numBlocks, dimBlocks, args, sharedMemBytes,
+                                    stream, startEvent, stopEvent, flags);
+@@ -398,7 +457,7 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f, unsigned int gridDimX, unsigne
+             std::cout << " -- No kernargs\n";
+         }
+     }
+-    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRef_func(f));
++    if (hooked()) kl_on_launch(hipKernelNameRef_func(f));
+ 
+     return hipModuleLaunchKernel_func(f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ,
+                                       sharedMemBytes, stream, kernelParams, extra);
+@@ -427,7 +486,7 @@ hipError_t hipExtModuleLaunchKernel(hipFunction_t f, uint32_t globalWorkSizeX,
+             std::cout << " -- No kernargs\n";
+         }
+     }
+-    if (verbose || ckpt_enabled()) kl_on_launch(hipKernelNameRef_func(f));
++    if (hooked()) kl_on_launch(hipKernelNameRef_func(f));
+ 
+     return hipExtModuleLaunchKernel_func(f, globalWorkSizeX, globalWorkSizeY, globalWorkSizeZ, localWorkSizeX,
+                                          localWorkSizeY, localWorkSizeZ, sharedMemBytes, hStream, kernelParams,
+-- 
+2.43.0
+

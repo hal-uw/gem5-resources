@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Checkpoint and restore a HIP app with CRIU on one CPX partition of an MI300X.
 
+  gpu_checkpoint.py profile CMD [ARGS...]
   gpu_checkpoint.py checkpoint --kernel NAME[:N] [--continue] DIR CMD [ARGS...]
   gpu_checkpoint.py restore DIR
+
+profile runs CMD under klHook the same way checkpoint does, without
+checkpointing, and then lists every kernel (by base name) with its launch count:
+the names and counts --kernel NAME:N selects from.
 
 checkpoint runs CMD under klHook and dumps it into DIR (which must not exist
 yet) right before a kernel launch:
@@ -10,7 +15,10 @@ yet) right before a kernel launch:
                      mangled name (default: $KL_CKPT_KERNEL)
   --continue         dump with --leave-running and let the app finish; exit
                      with its status (otherwise criu kills the app)
-The app's output goes to DIR/app.log. DIR must keep its absolute path.
+The app runs in the current directory; its output goes to DIR/app.log.
+For profile and checkpoint, KL_HOOK_* variables (e.g. KL_HOOK_HIP_LIB_PATH)
+are passed on to klHook.
+DIR, the cwd and every file the app had mapped must keep their absolute paths.
 
 restore restores DIR and waits for the app to exit. On the MI300X host it
 restores onto a CPX partition again with the stock amdgpu plugin; without
@@ -31,6 +39,7 @@ import pwd
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -98,16 +107,57 @@ def unit_prop(unit, prop):
                           capture_output=True, text=True).stdout.strip()
 
 
-def checkpoint(args):
-    if not args.cmd:
+def app_command(argv):
+    """argv with an absolute path to the program (not resolved: keeps venvs)."""
+    if not argv:
         raise Error("no command given")
-    exe = shutil.which(args.cmd[0])
+    exe = shutil.which(argv[0])
     if not exe:
-        raise Error(f"not found: {args.cmd[0]}")
-    cmd = [os.path.realpath(exe), *args.cmd[1:]]
+        raise Error(f"not found: {argv[0]}")
     if not os.path.isfile(KLHOOK):
         raise Error(f"no {KLHOOK} (run build.sh first)")
+    return [os.path.abspath(exe), *argv[1:]]
 
+
+def app_unit(dev, env):
+    """systemd-run properties to run the app as us, in the cwd, under klHook."""
+    env = {"HSA_ENABLE_INTERRUPT": "0",  # gem5 sends no completion IRQs
+           "GLIBC_TUNABLES": f"glibc.cpu.hwcaps={GLIBC_HWCAPS}",
+           "LD_PRELOAD": KLHOOK, **env}
+    env.update((k, v) for k, v in os.environ.items() if k.startswith("KL_HOOK_"))
+    # A service (not --uid) keeps our supplementary groups, e.g. render.
+    return [*dev, "-p", f"User={pwd.getpwuid(os.getuid()).pw_name}",
+            "-p", f"WorkingDirectory={os.getcwd()}",
+            *[f"--setenv={k}={v}" for k, v in env.items()]]
+
+
+def profile(args):
+    cmd = app_command(args.cmd)
+    tmp = tempfile.mkdtemp(prefix="gpu-profile-")
+    counts = os.path.join(tmp, "kernels")
+    try:
+        set_partition("CPX")
+        dev = device_cgroup(render_node())
+        rc = sudo("systemd-run", "--quiet", "--pipe", "--wait", "--collect",
+                  *app_unit(dev, {"KL_HOOK_COUNTS": counts}), *cmd,
+                  check=False).returncode
+        sys.stdout.flush()
+        if not os.path.exists(counts):
+            raise Error(f"app exited {rc} without launching a kernel (or before exit())")
+        with open(counts) as f:
+            rows = [l.rstrip("\n").split("\t", 1) for l in f]
+        total = sum(int(n) for n, _ in rows)
+        print(f"\n{total} kernel launches, {len(rows)} kernels (app exited {rc}):")
+        for n, name in rows:
+            print(f"{int(n):8d}  {name}")
+        return rc
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        set_partition("SPX")
+
+
+def checkpoint(args):
+    cmd = app_command(args.cmd)
     d = os.path.abspath(args.dir)
     os.mkdir(d)
     log = os.path.join(d, "app.log")
@@ -118,16 +168,10 @@ def checkpoint(args):
         render = render_node()
         dev = device_cgroup(render)
 
-        env = {"HSA_ENABLE_INTERRUPT": "0",  # gem5 sends no completion IRQs
-               "GLIBC_TUNABLES": f"glibc.cpu.hwcaps={GLIBC_HWCAPS}",
-               "LD_PRELOAD": KLHOOK, "KL_CKPT_KERNEL": args.kernel,
-               "KL_CKPT_READY": ready, "KL_CKPT_GO": go}
-        sudo("systemd-run", "--quiet", f"--unit={unit}", *dev,
-             "-p", f"User={pwd.getpwuid(os.getuid()).pw_name}",
-             "-p", f"WorkingDirectory={d}", "-p", "StandardInput=null",
-             "-p", f"StandardOutput=file:{log}", "-p", "StandardError=inherit",
-             "-p", "RemainAfterExit=yes",
-             *[f"--setenv={k}={v}" for k, v in env.items()], *cmd)
+        env = {"KL_CKPT_KERNEL": args.kernel, "KL_CKPT_READY": ready, "KL_CKPT_GO": go}
+        sudo("systemd-run", "--quiet", f"--unit={unit}", *app_unit(dev, env),
+             "-p", "StandardInput=null", "-p", f"StandardOutput=file:{log}",
+             "-p", "StandardError=inherit", "-p", "RemainAfterExit=yes", *cmd)
         pid = unit_prop(unit, "MainPID")
 
         # klHook creates the ready file once the GPU is drained, right before the launch.
@@ -156,6 +200,8 @@ def checkpoint(args):
             while unit_prop(unit, "SubState") == "running":
                 time.sleep(0.25)
             rc = int(unit_prop(unit, "ExecMainStatus") or 0)
+            if unit_prop(unit, "ExecMainCode") != "1":  # 1 = CLD_EXITED, else a signal
+                rc += 128
             print(f"app exited {rc}")
         return rc
     finally:
@@ -207,6 +253,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
+    pr = sub.add_parser("profile", help="run an app and list its kernels and launch counts")
+    pr.add_argument("cmd", nargs=argparse.REMAINDER)
     c = sub.add_parser("checkpoint", help="run an app and checkpoint it")
     kernel = os.environ.get("KL_CKPT_KERNEL")
     c.add_argument("--kernel", metavar="NAME[:N]", default=kernel, required=kernel is None,
@@ -219,7 +267,8 @@ def main():
     r.add_argument("dir")
     args = p.parse_args()
     try:
-        sys.exit(checkpoint(args) if args.command == "checkpoint" else restore(args))
+        sys.exit({"profile": profile, "checkpoint": checkpoint,
+                  "restore": restore}[args.command](args))
     except (Error, OSError) as e:
         sys.exit(f"{os.path.basename(sys.argv[0])}: {e}")
     except subprocess.CalledProcessError as e:
