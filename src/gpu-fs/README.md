@@ -11,10 +11,8 @@ taken right before a chosen kernel launch. The application needs no changes.
 | `criu-patches/` | Patches applied to `criu/` by `build.sh`, in name order |
 | `klHook/` | Submodule: LD_PRELOAD hook for HIP launches; pauses before the selected kernel |
 | `build.sh` | Applies the patches and builds criu, the amdgpu plugin and `libklhook.so` |
-| `kl-ckpt.sh` | Runs an app and checkpoints it before the selected kernel launch |
-| `ckpt.sh` | Runs an app and checkpoints it once it sits in `sleep()` (no klHook) |
-| `restore.sh` | Restores a checkpoint, on the host or in the gem5 guest |
-| `run_gem5_restore.sh` | Boots the gem5 guest and runs `restore.sh` in it |
+| `gpu_checkpoint.py` | `checkpoint`: runs an app and checkpoints it; `restore`: restores it, on the host or in the gem5 guest |
+| `run_gem5_restore.sh` | Boots the gem5 guest and runs `gpu_checkpoint.py restore` in it |
 
 ## Setup
 
@@ -31,20 +29,21 @@ ROCm comes from `/opt/rocm` (override it with `ROCM_PATH`).
 ## Checkpoint and restore
 
 ```sh
-KL_CKPT_KERNEL=vector_square:2 src/gpu-fs/kl-ckpt.sh [--continue] <ckpt-dir> <app> [args...]
-src/gpu-fs/restore.sh <ckpt-dir>
+src/gpu-fs/gpu_checkpoint.py checkpoint --kernel <kernel>[:<n>] [--continue] <checkpoint-dir> <app> [args...]
+src/gpu-fs/gpu_checkpoint.py restore <checkpoint-dir>
 ```
 
-- `KL_CKPT_KERNEL=<kernel>[:<n>]` selects the n-th launch (default 1st) of the
-  kernel, matched by its base name or its mangled name. `KL_HOOK_VERBOSE=1`
-  prints every launched kernel's name.
-- At that launch klHook waits for the GPU to finish all earlier work (via
-  `hipDeviceSynchronize`), then hands the process to `kl-ckpt.sh`, which dumps
-  it. By default the dump kills the app. With `--continue` the app finishes
-  natively, and the script returns the app's exit status.
+- `--kernel <kernel>[:<n>]` (or `KL_CKPT_KERNEL`) checkpoints right before
+  the n-th launch (default 1st) of the kernel, matched by its base name or its
+  mangled name. `KL_HOOK_VERBOSE=1` prints every launched kernel's name.
+- At the selected launch klHook waits for the GPU to finish all earlier work
+  (via `hipDeviceSynchronize`), then hands the process over to be dumped. By
+  default the dump kills the app. With `--continue` the app finishes natively,
+  and the script returns the app's exit status.
+- `restore` waits for the restored app to exit and prints its output.
 - After a restore, klHook notices on its own that it was restored and launches
   the kernel.
-- The app's output goes to `<ckpt-dir>/app.log`. The checkpoint must stay at
+- The app's output goes to `<checkpoint-dir>/app.log`. The checkpoint must stay at
   the same absolute path (it holds the app's cwd and its open `app.log`), and
   so must every file the app had mapped (binary, ROCm libraries,
   `libklhook.so`).
@@ -66,8 +65,8 @@ cgroup, so both see a single GPU, and the checkpoint holds exactly one GPU.
 
 ### gem5
 
-`restore.sh` restores directly when `amd-smi` is not present, as in the gem5
-guest, and copies `app.log` and `restore.log` out with `m5 writefile`.
-`run_gem5_restore.sh <outdir> <ckpt-dir-in-guest>` boots the guest and runs
-it. The guest image needs the checkpoint and every file the app had mapped at
-the same paths.
+`gpu_checkpoint.py restore` restores directly when `amd-smi` is not present, as in
+the gem5 guest, and copies `app.log` and `restore.log` out with
+`m5 writefile`. `run_gem5_restore.sh <outdir> <checkpoint-dir-in-guest>` boots the
+guest and runs it there (the guest needs `python3`). The guest image needs the
+checkpoint and every file the app had mapped at the same paths.
