@@ -139,6 +139,12 @@ runs it there (the guest needs `python3`).
   differs from the real one: MEC firmware version (`KFD_FW_VER_CHECK=0`; the
   host's may be newer than gem5's), SDMA firmware version, RAS capability
   bits, VRAM size and cache count.
+- **No large BAR.** `gpu_checkpoint.py` (checkpoint and profile) runs the app with
+  `ROC_ENABLE_LARGE_BAR=0`, so HIP reports `isLargeBar = 0` and nothing reads
+  VRAM directly with the CPU. In gem5 the VRAM BAR is MMIO, and KVM cannot
+  emulate SSE loads from it (`movss`): PyTorch's `tensor.item()` (ROCm 7.2+
+  reads the scalar straight from VRAM on large-BAR GPUs) killed a restored
+  app with SIGILL. Checkpoints taken without it have the setting baked in.
 - **Exit status.** `criu restore` returns 0 once the restore succeeded,
   whatever the app does afterwards. Check the app's output, and `dmesg` in
   the guest for a crash.

@@ -122,6 +122,13 @@ def app_command(argv):
 def app_unit(dev, env):
     """systemd-run properties to run the app as us, in the cwd, under klHook."""
     env = {"HSA_ENABLE_INTERRUPT": "0",  # gem5 sends no completion IRQs
+           # No large BAR: HIP reports isLargeBar=0, so neither HIP nor the
+           # app (e.g. PyTorch's tensor.item() on ROCm >= 7.2) reads VRAM
+           # directly with the CPU. In gem5 the VRAM BAR is MMIO, KVM must
+           # emulate such loads, and it cannot emulate SSE moves like movss:
+           # the restored app dies with SIGILL. The choice is made at startup
+           # and checkpointed, so it must be set when the app starts.
+           "ROC_ENABLE_LARGE_BAR": "0",
            "GLIBC_TUNABLES": f"glibc.cpu.hwcaps={GLIBC_HWCAPS}",
            "LD_PRELOAD": KLHOOK, **env}
     env.update((k, v) for k, v in os.environ.items() if k.startswith("KL_HOOK_"))
