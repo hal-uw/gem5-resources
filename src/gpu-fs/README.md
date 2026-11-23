@@ -88,7 +88,7 @@ cgroup, so both see a single GPU, and the checkpoint holds exactly one GPU.
 
 CRIU loads every plugin in its `-L` directory, so the two are built in
 separate directories; never put both in one. `amdgpu_plugin_gem5` differs
-from the stock plugin in three ways:
+from the stock plugin in four ways:
 
 - It restores onto the subset of the checkpointed GPUs that hold state (on by
   default; `KFD_RESTORE_GPU_SUBSET=0` turns it off). A process on one GPU of
@@ -100,6 +100,13 @@ from the stock plugin in three ways:
 - It counts only the GPU links it restores in the topology match. In a
   device cgroup the dump stores the raw link count of the partition (15 on an
   MI300X in CPX) but only the one link it can see; gem5's GPU has one link.
+- It gives the restored process back its transparent huge pages. CRIU
+  restores memory page by page and re-applies `madvise()` only at the end,
+  so `MADV_HUGEPAGE` buffers (e.g. `hipHostMalloc`) come back as 4 KiB
+  pages and KFD maps them for the GPU with 4 KiB PTEs: a restored kernel
+  then has no 2 MiB TLB hits and many more page walks than the original.
+  The plugin collapses those regions (`process_madvise(MADV_COLLAPSE)`,
+  Linux 6.1+) before KFD resumes the process.
 - It writes the SDMA `COPY_LINEAR` count as bytes - 1 on MI300X, as the
   kernel driver does. Upstream writes the byte count, which copies one byte
   past each buffer; gem5's SDMA model executes exactly that and corrupts the

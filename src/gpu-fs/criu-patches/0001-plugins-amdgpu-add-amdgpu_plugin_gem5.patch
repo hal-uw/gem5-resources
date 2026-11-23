@@ -1,6 +1,6 @@
-From d5c3e61f792074d9f480f4fa99a35940415da0b8 Mon Sep 17 00:00:00 2001
+From b61b51f17c84ff1db24547ce781616bcd3b6dd7e Mon Sep 17 00:00:00 2001
 From: Vishnu Ramadas <vramadas@outlook.com>
-Date: Sun, 22 Nov 2026 16:52:54 -0600
+Date: Mon, 23 Nov 2026 10:16:12 -0600
 Subject: [PATCH] plugins/amdgpu: add amdgpu_plugin_gem5 for restores in gem5
 
 Build a second amdgpu plugin, gem5/amdgpu_plugin_gem5.so
@@ -11,7 +11,7 @@ its -L directory, so the gem5 plugin is built and installed in its own
 gem5/ subdirectory: -L plugins/amdgpu selects the stock plugin,
 -L plugins/amdgpu/gem5 the gem5 one.
 
-The gem5 plugin differs from the stock one in three ways:
+The gem5 plugin differs from the stock one in four ways:
 
 - Restore onto a subset of the checkpointed GPUs (on by default,
   KFD_RESTORE_GPU_SUBSET=0 turns it off). The ROCm runtime opens every
@@ -31,6 +31,16 @@ The gem5 plugin differs from the stock one in three ways:
   left out above; neither is restored, so neither takes part in the
   topology match.
 
+- Transparent huge pages come back. CRIU fills private memory page by
+  page and re-applies madvise() bits only at the end of the restorer, so
+  regions the application marked MADV_HUGEPAGE (e.g. hipHostMalloc
+  buffers) come back as 4 KiB pages, and KFD maps such USERPTR BOs into
+  the GPU page tables with 4 KiB PTEs instead of 2 MiB fragments. Before
+  KFD resumes the process, the plugin collapses those regions with
+  process_madvise(MADV_COLLAPSE) (Linux >= 6.1). Best effort. In gem5, a
+  restored square kernel went from 0 to 16123 L1 TLB hits on 2 MiB pages,
+  as in the original process.
+
 - SDMA COPY_LINEAR count is bytes - 1 on AMDGPU_FAMILY_AI and newer, as
   the kernel's sdma_v4+ emit_copy_buffer writes it. The plugin writes the
   byte count, which copies one byte past the end of both buffers; gem5's
@@ -40,11 +50,11 @@ The gem5 plugin differs from the stock one in three ways:
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  plugins/amdgpu/Makefile                 |  23 +-
- plugins/amdgpu/amdgpu_plugin.c          |  96 ++++-
+ plugins/amdgpu/amdgpu_plugin.c          | 175 +++++++-
  plugins/amdgpu/amdgpu_plugin_subset.c   | 549 ++++++++++++++++++++++++
  plugins/amdgpu/amdgpu_plugin_subset.h   |  88 ++++
  plugins/amdgpu/amdgpu_plugin_topology.c |   8 +
- 5 files changed, 756 insertions(+), 8 deletions(-)
+ 5 files changed, 835 insertions(+), 8 deletions(-)
  create mode 100644 plugins/amdgpu/amdgpu_plugin_subset.c
  create mode 100644 plugins/amdgpu/amdgpu_plugin_subset.h
 
@@ -113,7 +123,7 @@ index 7d3388b80..70d49b64d 100644
  endif
  .PHONY: uninstall
 diff --git a/plugins/amdgpu/amdgpu_plugin.c b/plugins/amdgpu/amdgpu_plugin.c
-index b56ba6d14..e5ee754b5 100644
+index b56ba6d14..3ca6a18de 100644
 --- a/plugins/amdgpu/amdgpu_plugin.c
 +++ b/plugins/amdgpu/amdgpu_plugin.c
 @@ -33,6 +33,7 @@
@@ -302,6 +312,99 @@ index b56ba6d14..e5ee754b5 100644
  
  	xfree((void *)args.devices);
  	xfree((void *)args.bos);
+@@ -1800,6 +1886,80 @@ int amdgpu_plugin_update_vmamap(const char *in_path, const uint64_t addr, const
+ }
+ CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__UPDATE_VMA_MAP, amdgpu_plugin_update_vmamap)
+ 
++#ifdef AMDGPU_PLUGIN_GEM5
++#include <sys/syscall.h>
++#include <sys/uio.h>
++
++#ifndef MADV_COLLAPSE
++#define MADV_COLLAPSE 25
++#endif
++
++/*
++ * Give the restored process back the transparent huge pages it had.
++ *
++ * CRIU fills private memory page by page and re-applies madvise() bits only
++ * at the end of the restorer, so a region the application marked
++ * MADV_HUGEPAGE (e.g. hipHostMalloc buffers) comes back as 4 KiB pages.
++ * KFD then maps such USERPTR BOs into the GPU page tables with 4 KiB PTEs
++ * instead of 2 MiB fragments, and GPU kernels see many more TLB misses and
++ * page walks than in the checkpointed process. Collapse those regions into
++ * huge pages before KFD resumes the process and maps the userptr pages.
++ * Best effort: failures only log a warning.
++ */
++static void collapse_huge_page_regions(int pid)
++{
++	char path[64], line[512];
++	struct iovec iov[64];
++	unsigned long start = 0, end = 0, total = 0, done = 0;
++	int n = 0, pidfd;
++	FILE *f;
++
++	pidfd = syscall(SYS_pidfd_open, pid, 0);
++	if (pidfd < 0) {
++		pr_warn("THP collapse: pidfd_open(%d) failed: %s\n", pid, strerror(errno));
++		return;
++	}
++	snprintf(path, sizeof(path), "/proc/%d/smaps", pid);
++	f = fopen(path, "r");
++	if (!f) {
++		pr_warn("THP collapse: cannot open %s: %s\n", path, strerror(errno));
++		close(pidfd);
++		return;
++	}
++
++	while (fgets(line, sizeof(line), f)) {
++		unsigned long s, e;
++
++		if (sscanf(line, "%lx-%lx ", &s, &e) == 2) {
++			start = s;
++			end = e;
++		} else if (!strncmp(line, "VmFlags:", 8) && strstr(line, " hg") && end - start >= (2UL << 20)) {
++			iov[n].iov_base = (void *)start;
++			iov[n].iov_len = end - start;
++			total += end - start;
++			if (++n == ARRAY_SIZE(iov)) {
++				long r = syscall(SYS_process_madvise, pidfd, iov, n, MADV_COLLAPSE, 0);
++				if (r < 0)
++					pr_warn("THP collapse: process_madvise failed: %s\n", strerror(errno));
++				else
++					done += r;
++				n = 0;
++			}
++		}
++	}
++	if (n) {
++		long r = syscall(SYS_process_madvise, pidfd, iov, n, MADV_COLLAPSE, 0);
++		if (r < 0)
++			pr_warn("THP collapse: process_madvise failed: %s\n", strerror(errno));
++		else
++			done += r;
++	}
++	fclose(f);
++	close(pidfd);
++	pr_info("THP collapse: %lu of %lu bytes in MADV_HUGEPAGE regions of pid %d\n", done, total, pid);
++}
++#endif
++
+ int amdgpu_plugin_resume_devices_late(int target_pid)
+ {
+ 	struct kfd_ioctl_criu_args args = { 0 };
+@@ -1807,6 +1967,11 @@ int amdgpu_plugin_resume_devices_late(int target_pid)
+ 
+ 	pr_info("Inside %s for target pid = %d\n", __func__, target_pid);
+ 
++#ifdef AMDGPU_PLUGIN_GEM5
++	/* Before KFD resumes the process and maps its userptr BOs. */
++	collapse_huge_page_regions(target_pid);
++#endif
++
+ 	fd = open(AMDGPU_KFD_DEVICE, O_RDWR | O_CLOEXEC);
+ 	if (fd < 0) {
+ 		pr_perror("failed to open kfd in plugin");
 diff --git a/plugins/amdgpu/amdgpu_plugin_subset.c b/plugins/amdgpu/amdgpu_plugin_subset.c
 new file mode 100644
 index 000000000..26b87e1a8
