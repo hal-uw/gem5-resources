@@ -9,23 +9,55 @@ cd "$HERE"
 
 git submodule update --init -- criu klHook
 
-# Apply the patch series in <dir> to submodule <sub> once, in name order, as
-# working-tree changes on top of the pinned commit.
+# Bring submodule <sub> to its pinned commit + the patch series in <dir> (name
+# order), as working-tree changes. Compares whole trees, untracked files
+# included, so a rerun works whatever is left over: already patched -> nothing
+# to do; partly patched (e.g. tracked files reverted by a checkout while the
+# files the patches create stay) -> those files are completed. Any other local
+# change stops the build, nothing is overwritten.
 apply_patches() {
-    local sub=$1 dir=$2 p
+    local sub=$1 dir=$2 p path want have base bad=()
     local patches=("$HERE/$dir"/*.patch)
     [ -e "${patches[0]}" ] || return 0
-    if git -C "$sub" diff --quiet HEAD; then
-        for p in "${patches[@]}"; do
-            git -C "$sub" apply "$p"
-            echo "applied: $dir/$(basename "$p")"
-        done
-    elif git -C "$sub" apply --reverse --check "${patches[-1]}" 2> /dev/null; then
+    local tmp; tmp=$(mktemp -d)
+    # want: HEAD + patches; have: the working tree (git add -A on a scratch
+    # index: untracked files count, ignored build outputs do not)
+    GIT_INDEX_FILE=$tmp/want git -C "$sub" read-tree HEAD
+    for p in "${patches[@]}"; do
+        GIT_INDEX_FILE=$tmp/want git -C "$sub" apply --cached "$p"
+    done
+    want=$(GIT_INDEX_FILE=$tmp/want git -C "$sub" write-tree)
+    GIT_INDEX_FILE=$tmp/have git -C "$sub" read-tree HEAD
+    GIT_INDEX_FILE=$tmp/have git -C "$sub" add -A
+    have=$(GIT_INDEX_FILE=$tmp/have git -C "$sub" write-tree)
+    base=$(git -C "$sub" rev-parse "HEAD^{tree}")
+    if [ "$have" = "$want" ]; then
         echo "already applied: $dir/*.patch"
     else
-        echo "$sub has local changes that are not $dir/*.patch" >&2
-        return 1
+        # every file that differs must be as in HEAD or as patched
+        while read -r path; do
+            have_blob=$(git -C "$sub" rev-parse -q --verify "$have:$path" || true)
+            if [ "$have_blob" != "$(git -C "$sub" rev-parse -q --verify "$want:$path" || true)" ] &&
+               [ "$have_blob" != "$(git -C "$sub" rev-parse -q --verify "$base:$path" || true)" ]; then
+                bad+=("$path")
+            fi
+        done < <(git -C "$sub" diff-tree -r --name-only "$have" "$want")
+        if [ ${#bad[@]} -gt 0 ]; then
+            echo "$sub has local changes that are not $dir/*.patch:" >&2
+            printf '  %s\n' "${bad[@]}" >&2
+            rm -rf "$tmp"
+            return 1
+        fi
+        while read -r path; do
+            if git -C "$sub" rev-parse -q --verify "$want:$path" > /dev/null; then
+                GIT_INDEX_FILE=$tmp/want git -C "$sub" checkout-index -f -- "$path"
+            else
+                rm -f "$sub/$path"
+            fi
+        done < <(git -C "$sub" diff-tree -r --name-only "$have" "$want")
+        echo "applied: $dir/*.patch"
     fi
+    rm -rf "$tmp"
 }
 apply_patches criu criu-patches
 apply_patches klHook klhook-patches
