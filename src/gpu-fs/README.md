@@ -12,9 +12,10 @@ taken right before a chosen kernel launch. The application needs no changes.
 | `klHook/` | Submodule: upstream klHook (LD_PRELOAD hook for HIP launches), pinned to its `main` |
 | `klhook-patches/` | Patches applied to `klHook/` by `build.sh`, in name order (see [klHook patches](#klhook-patches)) |
 | `build.sh` | Applies the patches and builds criu, both amdgpu plugins and `libklhook.so` |
-| `gpu_checkpoint.py` | `profile`: lists an app's kernels and launch counts; `checkpoint`: runs an app and checkpoints it; `restore`: restores it, on the host or in the gem5 guest |
-| `utils/make_pkg_disk.sh` | Makes the package disk of a gem5 package (used by `restore --gem5`) |
+| `gpu_checkpoint.py` | `profile`: lists an app's kernels and launch counts; `checkpoint`: runs an app and checkpoints it; `restore`: restores it, on the host or (`--gem5`) in the gem5 guest |
+| `utils/make_pkg_disk.sh` | Makes the package disk of a gem5 package |
 | `utils/pkg_disk_config.py` | gem5 config wrapper: runs an unmodified board config with the package disk as second disk |
+| `utils/gem5_verdict.py` | PASS/FAIL of a gem5 restore, from gem5's output directory |
 | `utils/make_1xcc_ipt.py` | Makes the single-XCC IP-discovery binary the gem5 guest needs for a CPX checkpoint |
 
 ## Setup
@@ -64,7 +65,7 @@ src/gpu-fs/gpu_checkpoint.py restore [--gem5 [--overlay <dir>]] <checkpoint-dir>
   the same absolute path (it holds the app's cwd and its open `app.log`), and
   so must every file the app had mapped (binary, ROCm libraries,
   `libklhook.so`).
-- Environment variables: `GPU` (PCI address, default `0000:f6:00.0`), `PART`
+- Environment variables: `GPU` (PCI address, default: the first GPU), `PART`
   (CPX partition 0-7, default 0), `CRIU`, `PLUGIN` (plugin directory: by
   default `criu/plugins/amdgpu` for checkpoints and native restores,
   `criu/plugins/amdgpu/gem5` for restores in the gem5 guest), `KLHOOK`.
@@ -143,44 +144,70 @@ with their owners and modes; `SHA256SUMS` over `rootfs/`; and
 from KFD: XCC, SIMD, array and SDMA counts, so `ipt` says whether the guest
 needs the single-XCC IP-discovery binary).
 
-On the gem5 host:
+On the gem5 host, nothing is installed into the guest image and gem5 is not
+changed. Three steps:
 
 ```sh
-src/gpu-fs/gpu_checkpoint.py restore --gem5 --outdir m5out-app <checkpoint-dir>.gem5.tar.gz
+# 1. the package disk (next to the tarball: <checkpoint-dir>.gem5.img)
+BASE=<guest disk image> src/gpu-fs/utils/make_pkg_disk.sh <checkpoint-dir>.gem5.tar.gz
+# 2. gem5, with the disk attached and this script as the app
+gem5.opt -d m5out-app [gem5 options] \
+    src/gpu-fs/utils/pkg_disk_config.py <checkpoint-dir>.gem5.img \
+    configs/example/gem5_library/x86-mi300x-gpu.py [config options] \
+    --image <guest disk image> --kernel <guest kernel> \
+    --ipt-binary <IP-discovery binary> \
+    --app src/gpu-fs/gpu_checkpoint.py --opts "restore --gem5"
+# 3. PASS or FAIL
+src/gpu-fs/utils/gem5_verdict.py m5out-app
 ```
 
+Where each part happens:
+
+| Step | Where | When |
+|---|---|---|
+| Package (`checkpoint --gem5`) | MI300X host | with the checkpoint |
+| Package disk (`utils/make_pkg_disk.sh`) | gem5 host | once per checkpoint, before gem5 |
+| Single-XCC IP-discovery binary (`utils/make_1xcc_ipt.py`) | gem5 host | once per gem5 setup; pass it with `--ipt-binary` when the manifest's `ipt` is `1xcc` (one CPX partition), the 8-XCC one for `8xcc` |
+| Attaching the disk (`utils/pkg_disk_config.py`) | gem5 command line | every run, in front of the config |
+| Overlaying the disk on `/` (overlayfs) | guest, `gpu_checkpoint.py restore --gem5` | every run, automatically, before criu |
+| Restore, copying results out | guest, `gpu_checkpoint.py restore --gem5` | every run |
+| PASS/FAIL (`utils/gem5_verdict.py`) | gem5 host | after the run |
+
+`--overlay <dir>` (below) is a different thing: copying files into place for
+a checkpoint installed in the image itself, not needed with a package disk.
+
 1. `utils/make_pkg_disk.sh` turns the package into a small ext4 disk image
-   next to it (`<checkpoint-dir>.gem5.img`, label `gem5pkg`; rebuilt when
-   the tarball is newer). It holds the package's files except those
-   identical to the guest image's, criu and `amdgpu_plugin_gem5`, and the
-   manifest. Building it needs only `fakeroot` and `mke2fs`; the guest image
-   is never written, and each checkpoint costs only its own disk.
-2. gem5 boots with `utils/pkg_disk_config.py`, which runs the usual config
-   (`CONFIG`, default `x86-mi300x-gpu.py`) unchanged and attaches the disk
-   as the guest's second disk, copy-on-write like the root disk. The
-   manifest's GPU shape picks the IP-discovery binary (a CPX checkpoint gets
-   the single-XCC one, made with `utils/make_1xcc_ipt.py` if missing).
-3. In the guest, `restore --gem5` mounts the disk and lays its files over
-   `/` with overlayfs, one mount per top-level directory: the package's
+   (label `gem5pkg`). It holds the package's files except those identical to
+   the guest image's (`BASE`, read only; unset keeps every file), criu and
+   `amdgpu_plugin_gem5` (from `CRIU_TREE`, default `criu/` built by
+   `build.sh`) and the manifest. It needs `fakeroot`,
+   e2fsprogs and `sfdisk`; each checkpoint costs only its own disk, and the
+   guest image is never written.
+2. `utils/pkg_disk_config.py <disk> <config> [options]` runs any X86 board
+   config unchanged and attaches the disk as the guest's second disk,
+   copy-on-write like the root disk. The IP-discovery binary must match the
+   manifest's `ipt` (printed by `make_pkg_disk.sh`): `1xcc` for a checkpoint
+   of one CPX partition, made with
+   `utils/make_1xcc_ipt.py <8-XCC binary> mi300x_1xcc_discovery.bin`.
+3. gem5 copies `gpu_checkpoint.py` (`--app`) into the guest and runs it as
+   root with `restore --gem5` (`--opts`). It mounts the disk (label
+   `gem5pkg`) and lays its files
+   over `/` with overlayfs, one mount per top-level directory: the package's
    files win over the image's at the same paths, so packages never
    conflict. It takes criu, the plugin and the checkpoint path from the
    disk, logs fatal signals to `dmesg`, restores, and copies out with
    `m5 writefile` the app's log (`app.log.after-restore`), `restore.log`,
    every file the app created or changed in the checkpoint directory (e.g. a
    result file), the tail of `dmesg` and a listing of the directory.
-4. Back on the host it prints `PASS` or `FAIL`: criu restored, the app's
-   log came out, the GPU was active (`shaderActiveTicks` in `stats.txt`) and
-   `dmesg` shows no crash or fault. Whether the app's own result is right is
-   for you to check in its log.
+4. `utils/gem5_verdict.py <outdir>` prints `PASS` or `FAIL`: criu restored,
+   the app's log came out, the GPU was active (`shaderActiveTicks` in
+   `stats.txt`) and `dmesg` shows no crash or fault. Whether the app's own
+   result is right is for you to check in its log (its tail is printed).
 
-Instead of a package, `restore --gem5` also takes the path of a checkpoint
-already installed in the guest image (criu in `GUEST_CRIU`), with
+`restore --gem5 [DIR]` also restores a checkpoint already installed in the
+guest image, without a package disk (criu from `CRIU` and `PLUGIN`), with
 `--overlay <dir>` (or `OVERLAY`) for files that differ from the image's:
 `<dir>/<path>` is copied to `/<path>` first.
-Environment: `GEM5` (gem5 tree with `build/VEGA_X86/gem5.opt`),
-`GEM5_DISK`, `GEM5_KERNEL`, `IPT` (force an IP-discovery binary), `CONFIG`,
-`DEBUG_FLAGS` (default `GPUKernelInfo`, into `trace.txt`), `CRIU_TREE` (criu
-build for the package disk, default `criu/`).
 
 - **Files.** The guest needs the checkpoint and every file the app had
   mapped at the same paths, byte for byte: binary, inputs it still has open,
@@ -193,8 +220,7 @@ build for the package disk, default `criu/`).
   ```sh
   src/gpu-fs/utils/make_1xcc_ipt.py <8-XCC ipt binary> mi300x_1xcc_discovery.bin
   ```
-  `restore --gem5` does this itself when needed and passes it to gem5 with
-  `--ipt-binary`; set `IPT` to use another binary.
+  and give it to gem5 with `--ipt-binary`.
 - **Property checks.** The restore skips the checks where gem5's MI300X
   differs from the real one: MEC firmware version (`KFD_FW_VER_CHECK=0`; the
   host's may be newer than gem5's), SDMA firmware version, RAS capability
