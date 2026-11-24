@@ -2,8 +2,9 @@
 """Checkpoint and restore a HIP app with CRIU on one CPX partition of an MI300X.
 
   gpu_checkpoint.py profile CMD [ARGS...]
-  gpu_checkpoint.py checkpoint --kernel NAME[:N] [--continue] DIR CMD [ARGS...]
+  gpu_checkpoint.py checkpoint --kernel NAME[:N] [--continue] [--gem5] DIR CMD [ARGS...]
   gpu_checkpoint.py restore DIR
+  gpu_checkpoint.py restore --gem5 --outdir OUT [--overlay ODIR] PACKAGE|DIR
 
 profile runs CMD under klHook the same way checkpoint does, without
 checkpointing, and then lists every kernel (by base name) with its launch count:
@@ -15,6 +16,12 @@ yet) right before a kernel launch:
                      mangled name (default: $KL_CKPT_KERNEL)
   --continue         dump with --leave-running and let the app finish; exit
                      with its status (otherwise criu kills the app)
+  --gem5             also write DIR.gem5.tar.gz, the package for the gem5
+                     guest image: <name>/rootfs/ holds the checkpoint, the
+                     app's cwd and every file its process tree had mapped or
+                     open at the dump, at their absolute paths, with owners
+                     and modes; plus SHA256SUMS and manifest.json (paths,
+                     command, kernel, GPU shape)
 The app runs in the current directory; its output goes to DIR/app.log.
 For profile and checkpoint, KL_HOOK_* variables (e.g. KL_HOOK_HIP_LIB_PATH)
 are passed on to klHook.
@@ -24,6 +31,24 @@ restore restores DIR and waits for the app to exit. On the MI300X host it
 restores onto a CPX partition again with the stock amdgpu plugin; without
 amd-smi (the gem5 guest) it restores directly with amdgpu_plugin_gem5 and
 copies the logs out with m5 writefile.
+  --gem5          on the gem5 host: boot the gem5 guest (output in OUT) and
+                  restore there. PACKAGE (DIR.gem5.tar.gz from checkpoint
+                  --gem5, or the disk utils/make_pkg_disk.sh made of it,
+                  built next to it if missing) is attached as the guest's
+                  second disk through utils/pkg_disk_config.py; the guest
+                  lays its files over / (overlayfs), takes criu, the plugin
+                  and DIR from it, and the manifest's GPU shape picks the IP
+                  discovery table. A DIR instead is a checkpoint already
+                  installed in the guest image. In the guest it also logs
+                  fatal signals to dmesg and copies out with m5 writefile the
+                  app's log, restore.log, the files the app created or
+                  changed in DIR, the dmesg tail and a listing of DIR. Ends
+                  with PASS/FAIL: criu restored, the app's log came out, the
+                  GPU was active (shaderActiveTicks) and dmesg has no fault.
+                  Env: GEM5 (gem5 tree), GEM5_DISK, GEM5_KERNEL, IPT (force a
+                  table), CONFIG (gem5 config), DEBUG_FLAGS, GUEST_CRIU.
+  --overlay ODIR  with --gem5: in the guest, first put each file
+                  ODIR/<path> in place at /<path> (default: $OVERLAY)
 
 On the host the GPU is CPX during the run and SPX afterwards: amdgpu-dkms 7.1.9
 cannot restore queues of multi-XCC GPUs. The app and criu share a device cgroup
@@ -34,11 +59,15 @@ restore in the gem5 guest), KLHOOK.
 """
 import argparse
 import glob
+import hashlib
+import io
+import json
 import os
 import pwd
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
@@ -52,6 +81,17 @@ PLUGIN_STOCK = os.path.join(HERE, "criu/plugins/amdgpu")
 PLUGIN_GEM5 = os.path.join(HERE, "criu/plugins/amdgpu/gem5")
 PLUGIN = os.environ.get("PLUGIN")
 KLHOOK = os.environ.get("KLHOOK", os.path.join(HERE, "klHook/libklhook.so"))
+UTILS = os.path.join(HERE, "utils")
+# gem5 host (restore --gem5): gem5 tree, guest disk image, kernel, IP tables
+GEM5 = os.environ.get("GEM5", "/nobackup2/vishnu/gpu-fs/gap-gem5")
+GEM5_RES = os.environ.get(
+    "GEM5_RES", "/nobackup2/vishnu/gpu-fs/mgpu/gem5-resources/src/x86-ubuntu-gpu-ml")
+GEM5_DISK = os.environ.get("GEM5_DISK", f"{GEM5_RES}/disk-image-k138/x86-ubuntu-rocm72-k138")
+GEM5_KERNEL = os.environ.get("GEM5_KERNEL", f"{GEM5_RES}/vmlinux-rocm72-k138")
+IPT_8XCC = os.environ.get("IPT_8XCC", f"{GEM5_RES}/disk-image-rocm72/mi300x_hybrid_discovery.bin")
+IPT_1XCC = os.environ.get("IPT_1XCC", f"{GEM5_RES}/disk-image-rocm72/mi300x_1xcc_discovery.bin")
+# CRIU in the guest image, for checkpoints installed there (no package disk)
+GUEST_CRIU = os.environ.get("GUEST_CRIU", "/users/vramadas/square/criu")
 SUDO = [] if os.geteuid() == 0 else ["sudo"]
 CRIU_OPTS = ["--link-remap", "--tcp-established", "--file-locks"]
 
@@ -75,8 +115,8 @@ def set_partition(mode):
          stdout=subprocess.DEVNULL)
 
 
-def render_node():
-    """Render node of partition PART of GPU.
+def node_props():
+    """KFD topology properties of partition PART of GPU.
 
     KFD's location_id is bus << 8 | dev << 3 | fn, plus the partition index.
     """
@@ -88,8 +128,12 @@ def render_node():
             props = dict(l.split() for l in f if len(l.split()) == 2)
         if (props.get("location_id") == str(loc)
                 and props.get("domain") == str(int(domain, 16))):
-            return "renderD" + props["drm_render_minor"]
-    raise Error(f"no render node for {GPU} partition {PART}")
+            return props
+    raise Error(f"no KFD node for {GPU} partition {PART}")
+
+
+def render_node():
+    return "renderD" + node_props()["drm_render_minor"]
 
 
 def device_cgroup(render):
@@ -138,6 +182,99 @@ def app_unit(dev, env):
             *[f"--setenv={k}={v}" for k, v in env.items()]]
 
 
+# --- gem5 package -----------------------------------------------------------
+# CRIU reopens every file the process tree had mapped or open, by path, and
+# checks its size; the guest image must hold them byte for byte. The package
+# is <name>/rootfs/<absolute path> for each of them, plus the whole checkpoint
+# dir and the app's cwd, with their owners and modes (the restored app runs
+# with the checkpoint's uid/gid), SHA256SUMS over rootfs/ and manifest.json.
+SKIP_PREFIXES = ("/dev/", "/proc/", "/sys/", "/memfd:", "/dmabuf")
+GPU_SHAPE = ("num_xcc", "simd_count", "array_count", "cu_per_simd_array",
+             "simd_per_cu", "num_sdma_engines", "num_sdma_xgmi_engines",
+             "gfx_target_version", "device_id")
+
+
+def process_files(pid):
+    """(pids, cwds, files) of the process tree of pid: every regular file it
+    has mapped or open, its executables and working directories."""
+    script = r"""
+set -- $1
+while [ $# -gt 0 ]; do
+    p=$1; shift
+    echo "P $p"; echo "C $(readlink /proc/$p/cwd)"; echo "F $(readlink /proc/$p/exe)"
+    sed 's/^/M /' /proc/$p/maps
+    for f in /proc/$p/fd/*; do echo "F $(readlink $f)"; done
+    set -- "$@" $(cat /proc/$p/task/*/children 2>/dev/null)
+done
+"""
+    out = sudo("sh", "-c", script, "sh", str(pid), capture_output=True,
+               text=True).stdout
+    pids, cwds, files = [], set(), set()
+    for line in out.splitlines():
+        tag, _, rest = line.partition(" ")
+        if tag == "M":
+            f = rest.split(None, 5)
+            rest = f[5] if len(f) == 6 else ""
+        if tag == "P":
+            pids.append(int(rest))
+        elif tag == "C":
+            cwds.add(rest)
+        elif (rest.startswith("/") and not rest.endswith(" (deleted)")
+              and not rest.startswith(SKIP_PREFIXES) and os.path.isfile(rest)):
+            files.add(rest)
+    return pids, sorted(cwds), sorted(files)
+
+
+def make_package(d, listing, cmd, kernel, props):
+    """Write <d>.gem5.tar.gz: everything the gem5 guest image needs to
+    restore checkpoint d. listing is process_files() of the dumped tree,
+    taken right before the dump."""
+    name = os.path.basename(d)
+    pids, cwds, files = listing
+    files = list(files)
+    for root, _, fs in os.walk(d):
+        files += [os.path.join(root, f) for f in fs if not f.startswith(".kl-")]
+    files = sorted(set(files))
+    dirs = set(cwds) | {d}
+    for p in list(dirs) + files:  # every ancestor, so owners/modes come along
+        while p != "/":
+            p = os.path.dirname(p)
+            dirs.add(p)
+    dirs.discard("/")
+    manifest = {
+        "checkpoint": d, "cwd": cwds, "command": cmd, "kernel": kernel,
+        "pids": pids, "gpu": {k: props.get(k) for k in GPU_SHAPE},
+        # gem5's guest must show the same GPU shape (make_1xcc_ipt.py)
+        "ipt": "1xcc" if props.get("num_xcc") == "1" else "8xcc",
+        "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    out = d + ".gem5.tar.gz"
+    sums = []
+    with tarfile.open(out, "w:gz", compresslevel=1) as tf:
+        def add_bytes(arc, data):
+            ti = tarfile.TarInfo(f"{name}/{arc}")
+            ti.size, ti.mtime, ti.mode = len(data), int(time.time()), 0o644
+            tf.addfile(ti, io.BytesIO(data))
+        for p in sorted(dirs):
+            tf.add(p, f"{name}/rootfs{p}", recursive=False)
+        for p in files:
+            try:
+                tf.add(p, f"{name}/rootfs{p}", recursive=False)
+                h = hashlib.sha256()
+                with open(p, "rb") as f:
+                    while chunk := f.read(1 << 20):
+                        h.update(chunk)
+                h = h.hexdigest()
+            except PermissionError as e:
+                raise Error(f"cannot read {p} for the package: {e}")
+            sums.append(f"{h}  .{p}\n")
+        add_bytes("SHA256SUMS", "".join(sums).encode())
+        add_bytes("manifest.json", (json.dumps(manifest, indent=2) + "\n").encode())
+    print(f"gem5 package: {out} ({len(files)} files, "
+          f"{os.path.getsize(out) / 2**20:.0f} MiB)", flush=True)
+    return out
+
+
 def profile(args):
     cmd = app_command(args.cmd)
     tmp = tempfile.mkdtemp(prefix="gpu-profile-")
@@ -172,7 +309,8 @@ def checkpoint(args):
     unit = f"gpu-checkpoint-{os.getpid()}"
     try:
         set_partition("CPX")
-        render = render_node()
+        props = node_props()
+        render = "renderD" + props["drm_render_minor"]
         dev = device_cgroup(render)
 
         env = {"KL_CKPT_KERNEL": args.kernel, "KL_CKPT_READY": ready, "KL_CKPT_GO": go}
@@ -189,6 +327,8 @@ def checkpoint(args):
                 raise Error(f"app exited before {args.kernel} was launched")
             time.sleep(0.1)
 
+        if args.gem5:  # before the dump: it may kill the process tree
+            listing = process_files(pid)
         sudo("systemd-run", "--quiet", "--scope", *dev, CRIU, "dump", "-t", pid,
              "-D", d, "-v4", "-o", "dump.log", *CRIU_OPTS, "--unprivileged",
              "-L", PLUGIN or PLUGIN_STOCK, *(["--leave-running"] if args.cont else []))
@@ -200,6 +340,8 @@ def checkpoint(args):
         shutil.copy2(log, log + ".at-dump")  # restore puts it back: criu checks its size
         print(f"checkpoint of {cmd[0]} before {args.kernel} (pid {pid}, {render}) in {d}",
               flush=True)
+        if args.gem5:
+            make_package(d, listing, cmd, args.kernel, props)
 
         rc = 0
         if args.cont:
@@ -220,20 +362,238 @@ def checkpoint(args):
         set_partition("SPX")
 
 
-def restore(args):
-    d = os.path.abspath(args.dir)
-    if not os.path.isfile(os.path.join(d, "app.log.at-dump")):
-        raise Error(f"no checkpoint in {d}")
-    os.chdir(d)
-    shutil.copy2("app.log.at-dump", "app.log")  # criu checks the size of app.log
+PKG_LABEL = "gem5pkg"
+PKG_MNT = "/mnt/gem5pkg"
 
-    native = shutil.which("amd-smi") and os.path.exists(f"/sys/bus/pci/devices/{GPU}")
-    plugin = PLUGIN or (PLUGIN_STOCK if native else PLUGIN_GEM5)
+
+def mount_pkg_disk():
+    """Mount the package disk (make_pkg_disk.sh), if gem5 attached one, and
+    lay its rootfs/ over / with overlayfs, one mount per top-level directory
+    (/opt, /usr, /users, ...): its files win over the image's at the same
+    paths. Changes go to an upper layer on the root disk, which gem5 keeps
+    copy-on-write. Returns the manifest, or None without a package disk."""
+    dev = subprocess.run(["blkid", "-L", PKG_LABEL], capture_output=True,
+                         text=True).stdout.strip()
+    if not dev:
+        return None
+    os.makedirs(PKG_MNT, exist_ok=True)
+    subprocess.run(["mount", "-o", "ro", dev, PKG_MNT], check=True)
+    subprocess.run(["modprobe", "overlay"], check=False)
+    root = os.path.join(PKG_MNT, "rootfs")
+    for top in sorted(os.listdir(root)):
+        lower, target = os.path.join(root, top), "/" + top
+        work = f"/var/lib/gem5pkg/{top}"
+        os.makedirs(target, exist_ok=True)
+        os.makedirs(work + "/upper", exist_ok=True)
+        os.makedirs(work + "/work", exist_ok=True)
+        subprocess.run(["mount", "-t", "overlay", "overlay", "-o",
+                        f"lowerdir={lower}:{target},upperdir={work}/upper,"
+                        f"workdir={work}/work", target], check=True)
+        print(f"package disk {dev}: {target}", flush=True)
+    with open(os.path.join(PKG_MNT, "manifest.json")) as f:
+        return json.load(f)
+
+
+def overlay(src):
+    """Put the files under src (at their absolute paths below it) in place.
+
+    Files the checkpoint needs that differ from the image's are installed
+    under an overlay dir instead, so other checkpoints keep theirs. gem5's
+    disk is copy-on-write, so this lasts one run."""
+    for root, _, fs in os.walk(src):
+        for f in fs:
+            s = os.path.join(root, f)
+            dst = "/" + os.path.relpath(s, src)
+            tmp = dst + ".overlay.tmp"
+            shutil.copy2(s, tmp)
+            os.chown(tmp, os.stat(s).st_uid, os.stat(s).st_gid)
+            os.replace(tmp, dst)  # a new inode: running processes keep theirs
+            print(f"overlay: {dst}", flush=True)
+
+
+def writefile(path, name):
+    subprocess.run(["m5", "writefile", path, name], stdout=subprocess.DEVNULL)
+
+
+def dir_state(d):
+    """name -> (size, mtime) of the regular files in d. Compared before and
+    after the restore rather than against the time: files installed into the
+    image can carry host timestamps ahead of the guest's clock."""
+    st = {}
+    for f in os.listdir(d):
+        p = os.path.join(d, f)
+        if os.path.isfile(p):
+            s = os.stat(p)
+            st[f] = (s.st_size, s.st_mtime_ns)
+    return st
+
+
+def gem5_report(d, before):
+    """Copy the results of a restore in the gem5 guest out to the host's
+    outdir: the files the app created or changed in DIR (e.g. a result
+    file), the kernel log (crashes, GPU faults) and a listing of DIR."""
+    for f, st in sorted(dir_state(d).items()):
+        if before.get(f) != st and not f.endswith((".img", ".log")):
+            writefile(os.path.join(d, f), f)
+    dmesg = subprocess.run(["dmesg"], capture_output=True, text=True).stdout
+    tail = "".join(dmesg.splitlines(True)[-60:])
+    with open("/tmp/dmesg-after-restore.txt", "w") as f:
+        f.write(tail)
+    writefile("/tmp/dmesg-after-restore.txt", "dmesg-after-restore.txt")
+    with open("/tmp/ls-after-restore.txt", "w") as f:
+        f.write(time.ctime() + "\n")
+        f.write(subprocess.run(["ls", "-la", "--full-time", d],
+                               capture_output=True, text=True).stdout)
+    writefile("/tmp/ls-after-restore.txt", "ls-after-restore.txt")
+    bad = [l for l in tail.splitlines()
+           if any(w in l.lower() for w in ("segfault", "fatal", "signal", "fault", "traps"))]
+    if bad:
+        print("dmesg after restore:\n" + "\n".join(bad[-20:]), flush=True)
+
+
+# --- gem5 host: restore --gem5 <package> --outdir OUT -------------------------
+def package_disk(src):
+    """The package disk for src: src itself (an .img), or made from a
+    package tarball by utils/make_pkg_disk.sh next to it (reused while newer
+    than the tarball)."""
+    if not src.endswith(".tar.gz"):
+        return src
+    img = src[:-len(".tar.gz")] + ".img"
+    if not os.path.exists(img) or os.path.getmtime(img) < os.path.getmtime(src):
+        subprocess.run([os.path.join(UTILS, "make_pkg_disk.sh"), src, img],
+                       check=True, env={**os.environ, "BASE": GEM5_DISK})
+    return img
+
+
+def disk_manifest(img):
+    out = subprocess.run(["/sbin/debugfs", "-R", "cat /manifest.json", img],
+                         capture_output=True, text=True).stdout
+    try:
+        return json.loads(out)
+    except ValueError:
+        raise Error(f"{img}: no manifest.json (not made by make_pkg_disk.sh?)")
+
+
+def gem5_verdict(out):
+    """PASS when criu restored, the app's log came out, the GPU was active
+    and the guest kernel logged no crash or GPU fault."""
+    def read(f):
+        try:
+            with open(os.path.join(out, f), errors="replace") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+    console = read("board.pc.com_1.device")
+    crit = [l for l in console.splitlines() if l.startswith("criu restore exit")]
+    criu_rc = crit[-1].split()[-1] if crit else "?"
+    logs = glob.glob(os.path.join(out, "*.after-restore"))
+    kernels = read("trace.txt").count("Completed kernel")
+    ticks = 0
+    with open(os.path.join(out, "stats.txt"), errors="replace") as f:
+        for l in f:
+            if "shaderActiveTicks" in l:
+                ticks += int(l.split()[1])
+    faults = [l for l in read("dmesg-after-restore.txt").splitlines()
+              if any(w in l.lower() for w in ("segfault", "fatal", "signal", "fault", "traps"))]
+    for log in logs:
+        print(f"--- {os.path.basename(log)} (tail)")
+        print("".join(read(log).splitlines(True)[-5:]), end="")
+    ok = criu_rc == "0" and logs and ticks > 0 and not faults
+    print(f"{'PASS' if ok else 'FAIL'}: criu restore exit {criu_rc}, "
+          f"{len(logs)} app log(s), {kernels} kernels completed, "
+          f"shaderActiveTicks {ticks}, {len(faults)} fault lines in dmesg "
+          f"({out})", flush=True)
+    return 0 if ok else 1
+
+
+def gem5_restore(args):
+    """Boot the gem5 guest and restore in it. args.dir is a package
+    (.gem5.tar.gz from checkpoint --gem5, or its disk from
+    utils/make_pkg_disk.sh), attached as the guest's second disk; or the path
+    of a checkpoint already installed in the guest image."""
+    if not args.outdir:
+        raise Error("restore --gem5 needs --outdir")
+    out = os.path.abspath(args.outdir)
+    os.makedirs(out, exist_ok=True)
+    gem5 = [os.path.join(GEM5, "build/VEGA_X86/gem5.opt"), "-d", out,
+            f"--debug-flags={os.environ.get('DEBUG_FLAGS', 'GPUKernelInfo')}",
+            "--debug-file=trace.txt"]
+    guest = ["python3", "/tmp/gpu_checkpoint.py", "restore", "--gem5", "--guest"]
+    if args.overlay:
+        guest += ["--overlay", args.overlay]
+    if os.path.isfile(args.dir):
+        img = os.path.abspath(package_disk(args.dir))
+        manifest = disk_manifest(img)
+        ipt = IPT_8XCC if manifest.get("ipt") == "8xcc" else IPT_1XCC
+        gem5 += [os.path.join(UTILS, "pkg_disk_config.py"), img]
+        print(f"package disk {img}: checkpoint {manifest['checkpoint']}", flush=True)
+    else:  # a checkpoint inside the guest image
+        ipt = IPT_1XCC
+        guest = ["env", f"CRIU={GUEST_CRIU}/criu/criu",
+                 f"PLUGIN={GUEST_CRIU}/plugins/amdgpu/gem5", *guest, args.dir]
+    ipt = os.environ.get("IPT", ipt)
+    if not os.path.exists(ipt) and ipt == IPT_1XCC:
+        subprocess.run([sys.executable, os.path.join(UTILS, "make_1xcc_ipt.py"),
+                        IPT_8XCC, ipt], check=True)
+    app = os.path.join(out, "guest_restore.sh")
+    with open(os.path.realpath(__file__)) as f:
+        me = f.read()
+    with open(app, "w") as f:
+        f.write("#!/bin/bash\n"
+                f"cat > /tmp/gpu_checkpoint.py <<'GPU_CHECKPOINT_EOF'\n{me}"
+                "GPU_CHECKPOINT_EOF\n" + " ".join(guest) + "\n")
+    config = os.path.realpath(os.environ.get(
+        "CONFIG", os.path.join(GEM5, "configs/example/gem5_library/x86-mi300x-gpu.py")))
+    gem5 += [config, "--image", GEM5_DISK, "--kernel", GEM5_KERNEL,
+             "--ipt-binary", ipt, "--app", app]
+    print(" ".join(gem5), flush=True)
+    rc = subprocess.run(gem5, cwd=GEM5).returncode
+    if rc:
+        print(f"gem5 exit {rc}", flush=True)
+    return gem5_verdict(out) or (1 if rc else 0)
+
+
+def restore(args):
+    global CRIU
+    if args.gem5 and not args.guest:
+        return gem5_restore(args)
+    plugin = PLUGIN
+    if args.gem5:
+        manifest = mount_pkg_disk()
+        if manifest:
+            args.dir = args.dir or manifest["checkpoint"]
+            if "CRIU" not in os.environ:
+                CRIU = os.path.join(PKG_MNT, "criu/criu/criu")
+            plugin = plugin or os.path.join(PKG_MNT, "criu/plugins/amdgpu/gem5")
+    if not args.dir:
+        raise Error("no checkpoint dir given (and no package disk)")
+    d = os.path.abspath(args.dir)
+    # <log>.at-dump: the app's log as it was at the dump (app.log for
+    # checkpoints made by this script). The log is an open file of the app;
+    # criu checks its size, so it is put back before and after each restore.
+    logs = [f[:-len(".at-dump")] for f in glob.glob(os.path.join(d, "*.at-dump"))]
+    if not logs:
+        raise Error(f"no checkpoint in {d} (no *.at-dump)")
+    if args.gem5 and args.overlay:
+        overlay(args.overlay)
+    os.chdir(d)
+    for log in logs:
+        shutil.copy2(log + ".at-dump", log)
+
+    native = (not args.gem5 and shutil.which("amd-smi")
+              and os.path.exists(f"/sys/bus/pci/devices/{GPU}"))
+    plugin = plugin or (PLUGIN_STOCK if native else PLUGIN_GEM5)
+    before = dir_state(d)
     try:
         prefix = []
         if native:
             set_partition("CPX")
             prefix = ["systemd-run", "--quiet", "--scope", *device_cgroup(render_node())]
+        if args.gem5:
+            # criu restore returns 0 once the restore succeeded, whatever the
+            # app does afterwards: log fatal signals so a crash shows in dmesg.
+            with open("/proc/sys/kernel/print-fatal-signals", "w") as f:
+                f.write("1")
         # Skip the checks where gem5's MI300X differs from the real one: MEC
         # and SDMA firmware versions, RAS capability bits, VRAM size, caches.
         checks = ["KFD_FW_VER_CHECK=0", "KFD_SDMA_FW_VER_CHECK=0",
@@ -243,13 +603,18 @@ def restore(args):
                   "-o", "restore.log", *CRIU_OPTS, "--skip-file-rwx-check",
                   "-L", plugin, check=False).returncode
         print(f"criu restore exit {rc}", flush=True)
-        with open("app.log") as f:
-            sys.stdout.write(f.read())
+        for log in logs:
+            with open(log) as f:
+                sys.stdout.write(f.read())
         sys.stdout.flush()
-        if shutil.which("m5"):
-            subprocess.run(["m5", "writefile", "app.log", "app.log.after-restore"])
-            subprocess.run(["m5", "writefile", "restore.log", "restore.log"])
-        shutil.copy2("app.log.at-dump", "app.log")  # keep the checkpoint restorable
+        if args.gem5 or shutil.which("m5"):
+            for log in logs:
+                writefile(log, os.path.basename(log) + ".after-restore")
+            writefile("restore.log", "restore.log")
+        if args.gem5:
+            gem5_report(d, before)
+        for log in logs:
+            shutil.copy2(log + ".at-dump", log)  # keep the checkpoint restorable
         return rc
     finally:
         if native:
@@ -268,10 +633,23 @@ def main():
                    help="checkpoint before this kernel launch (default: $KL_CKPT_KERNEL)")
     c.add_argument("--continue", dest="cont", action="store_true",
                    help="let the app finish after the dump")
+    c.add_argument("--gem5", action="store_true",
+                   help="also write DIR.gem5.tar.gz, the package to install "
+                        "into the gem5 guest image")
     c.add_argument("dir")
     c.add_argument("cmd", nargs=argparse.REMAINDER)
     r = sub.add_parser("restore", help="restore a checkpoint")
-    r.add_argument("dir")
+    r.add_argument("--gem5", action="store_true",
+                   help="restore in a gem5 guest: DIR is a package (.gem5.tar.gz "
+                        "or its .img disk) or a checkpoint in the guest image")
+    r.add_argument("--outdir", help="with --gem5: gem5's output directory")
+    r.add_argument("--guest", action="store_true", help=argparse.SUPPRESS)
+    r.add_argument("--overlay", metavar="DIR", default=os.environ.get("OVERLAY"),
+                   help="with --gem5: first put the files under DIR in place "
+                        "(default: $OVERLAY)")
+    r.add_argument("dir", nargs="?",
+                   help="checkpoint dir (with --gem5 and a package disk: "
+                        "default from its manifest)")
     args = p.parse_args()
     try:
         sys.exit({"profile": profile, "checkpoint": checkpoint,
