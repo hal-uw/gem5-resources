@@ -27,7 +27,14 @@ sudo apt install libprotobuf-dev libprotobuf-c-dev protobuf-c-compiler protobuf-
 src/gpu-fs/build.sh
 ```
 
-ROCm comes from `/opt/rocm` (override it with `ROCM_PATH`).
+ROCm comes from `/opt/rocm` (override it with `ROCM_PATH`). On the gem5 host
+`build.sh` needs only criu and the plugins; it builds klHook (loaded into the
+app at checkpoint time) only when the installed HIP has the launch APIs it
+hooks (`hipLaunchKernelExC`, ROCm 7), and says why otherwise. klHook has no
+device code, so it is compiled host-only, with the newest GCC installation
+whose C++ headers are installed (clang otherwise takes the newest GCC, which
+may lack them). The gem5 package disk also needs `fakeroot`, `e2fsprogs`
+and `sfdisk` (util-linux).
 
 ## Checkpoint and restore
 
