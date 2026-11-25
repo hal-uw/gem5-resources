@@ -24,7 +24,8 @@ yet) right before a kernel launch:
                      command, kernel, GPU shape)
 The app runs in the current directory; its output goes to DIR/app.log.
 For profile and checkpoint, KL_HOOK_* variables (e.g. KL_HOOK_HIP_LIB_PATH)
-are passed on to klHook.
+are passed on to klHook. For a Python app whose torch bundles ROCm (pip
+wheels), KL_HOOK_HIP_LIB_PATH/KL_HOOK_HSA_LIB_PATH default to its torch/lib.
 DIR, the cwd and every file the app had mapped must keep their absolute paths.
 
 restore restores DIR and waits for the app to exit. On the MI300X host it
@@ -67,6 +68,23 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def load_env_sh():
+    """Settings from env.sh next to this script (env.example.sh), for
+    variables the environment does not set: GPU, PART, CRIU, PLUGIN, ..."""
+    path = os.path.join(HERE, "env.sh")
+    if not os.path.isfile(path):
+        return
+    out = subprocess.run(["bash", "-c", 'set -a; . "$1" >&2; env -0', "_", path],
+                         capture_output=True).stdout
+    for item in out.split(b"\0"):
+        key, _, val = item.decode(errors="replace").partition("=")
+        if key and val and not os.environ.get(key):
+            os.environ[key] = val
+
+
+load_env_sh()
 GPU = os.environ.get("GPU")  # PCI address; default: the first GPU KFD reports
 PART = int(os.environ.get("PART", "0"))
 CRIU = os.environ.get("CRIU", os.path.join(HERE, "criu/criu/criu"))
@@ -165,7 +183,36 @@ def app_command(argv):
     return [os.path.abspath(exe), *argv[1:]]
 
 
-def app_unit(dev, env):
+# Python finds torch on sys.path; it does not import torch (slow).
+FIND_TORCH_LIB = """
+import os, sys
+for d in sys.path:
+    lib = os.path.join(d or ".", "torch", "lib")
+    if os.path.isfile(os.path.join(lib, "libamdhip64.so")):
+        print(os.path.abspath(lib))
+        break
+"""
+
+
+def bundled_rocm(cmd):
+    """KL_HOOK_*_LIB_PATH for a Python app whose torch brings its own ROCm
+    (pip wheels: torch/lib). klHook otherwise loads /opt/rocm's HIP, and the
+    app gets a second runtime that sees no GPU. Set either variable to
+    override."""
+    if any(k in os.environ for k in ("KL_HOOK_HIP_LIB_PATH", "KL_HOOK_HSA_LIB_PATH")):
+        return {}
+    if not os.path.basename(cmd[0]).startswith("python"):
+        return {}
+    lib = subprocess.run([cmd[0], "-c", FIND_TORCH_LIB], capture_output=True,
+                         text=True).stdout.strip()
+    if not lib:
+        return {}
+    print(f"gpu_checkpoint.py: klHook uses torch's ROCm in {lib}", file=sys.stderr)
+    return {"KL_HOOK_HIP_LIB_PATH": os.path.join(lib, "libamdhip64.so"),
+            "KL_HOOK_HSA_LIB_PATH": os.path.join(lib, "libhsa-runtime64.so")}
+
+
+def app_unit(dev, env, cmd):
     """systemd-run properties to run the app as us, in the cwd, under klHook."""
     env = {"HSA_ENABLE_INTERRUPT": "0",  # gem5 sends no completion IRQs
            # No large BAR: HIP reports isLargeBar=0, so neither HIP nor the
@@ -176,7 +223,7 @@ def app_unit(dev, env):
            # and checkpointed, so it must be set when the app starts.
            "ROC_ENABLE_LARGE_BAR": "0",
            "GLIBC_TUNABLES": f"glibc.cpu.hwcaps={GLIBC_HWCAPS}",
-           "LD_PRELOAD": KLHOOK, **env}
+           "LD_PRELOAD": KLHOOK, **bundled_rocm(cmd), **env}
     env.update((k, v) for k, v in os.environ.items() if k.startswith("KL_HOOK_"))
     # A service (not --uid) keeps our supplementary groups, e.g. render.
     return [*dev, "-p", f"User={pwd.getpwuid(os.getuid()).pw_name}",
@@ -285,7 +332,7 @@ def profile(args):
         set_partition("CPX")
         dev = device_cgroup(render_node())
         rc = sudo("systemd-run", "--quiet", "--pipe", "--wait", "--collect",
-                  *app_unit(dev, {"KL_HOOK_COUNTS": counts}), *cmd,
+                  *app_unit(dev, {"KL_HOOK_COUNTS": counts}, cmd), *cmd,
                   check=False).returncode
         sys.stdout.flush()
         if not os.path.exists(counts):
@@ -316,7 +363,7 @@ def checkpoint(args):
         dev = device_cgroup(render)
 
         env = {"KL_CKPT_KERNEL": args.kernel, "KL_CKPT_READY": ready, "KL_CKPT_GO": go}
-        sudo("systemd-run", "--quiet", f"--unit={unit}", *app_unit(dev, env),
+        sudo("systemd-run", "--quiet", f"--unit={unit}", *app_unit(dev, env, cmd),
              "-p", "StandardInput=null", "-p", f"StandardOutput=file:{log}",
              "-p", "StandardError=inherit", "-p", "RemainAfterExit=yes", *cmd)
         pid = unit_prop(unit, "MainPID")

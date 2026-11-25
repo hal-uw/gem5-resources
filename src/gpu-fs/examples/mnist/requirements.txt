@@ -1,0 +1,10 @@
+# PyTorch for the MNIST example, on the MI300X host and in the gem5 guest image.
+# Both must have the same build at the same path (e.g. the system Python's
+# /usr/local/lib/python3.12/dist-packages), so the package disk can leave
+# torch out. guest-image/rocm-install.sh installs these in the guest.
+#   sudo /usr/bin/python3 -m pip install --break-system-packages -r requirements.txt
+# The wheels bundle their own ROCm (torch/lib); gpu_checkpoint.py points
+# klHook at it.
+--index-url https://download.pytorch.org/whl/rocm7.2
+torch==2.12.1+rocm7.2
+torchvision==0.27.1+rocm7.2
